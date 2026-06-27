@@ -20,7 +20,7 @@ const state = {
   translatedMap: {},       // 段落原文 -> 中文翻译
 };
 
-// 说话人识别暂时关闭（文本猜测不可靠，等接入声学分离再开）
+// 说话人识别暂关（文本猜测不可靠，等声学分离）
 const SPEAKERS_ENABLED = false;
 
 // 规则分段参数（纯靠时间戳 + 标点，零 AI 猜测）
@@ -121,7 +121,7 @@ function onIngested(data) {
   mountVideo(data.video_id); // YouTube 源 → 嵌入吸顶播放器并联动；其他源自动隐藏
   applyHideVideo(); // 恢复「隐藏视频」开关
 
-  // 命中缓存（同一视频/文件之前导入过）→ 直接复用章节/说话人，无需重算
+  // 命中缓存 → 直接复用章节/说话人，无需重算
   const hasCachedChapters = data.chapters && data.chapters.length;
   const hasCachedTurns = SPEAKERS_ENABLED && data.turns && data.turns.length;
   if (hasCachedTurns) {
@@ -251,7 +251,7 @@ function mdRender(text) {
   }
 }
 
-// 行内 Markdown（只渲染 **加粗** 等，不包 <p>）—— 用于笔记要点
+// 行内 Markdown（只渲染加粗等，不包 <p>）
 function mdInline(text) {
   try {
     return DOMPurify.sanitize(marked.parseInline(text || "", { gfm: true }));
@@ -286,7 +286,7 @@ function renderChapterCards(chapters) {
   chapters.forEach((ch, i) => body.appendChild(buildChapterCard(ch, i)));
 }
 
-// 单张笔记卡片：章节头 + 主旨 + 要点（要点可点击跳到对应字幕）
+// 单张笔记卡片：章节头 + 主旨 + 要点（可点击跳字幕）
 function buildChapterCard(ch, i) {
   const card = document.createElement("div");
   card.className = "chap-card";
@@ -361,13 +361,13 @@ function toggleCollapse(i) {
   document.querySelector(`.chap-card[data-chapter="${i}"]`)?.classList.toggle("collapsed");
 }
 
-// 替换某一章的卡片（笔记到达 / 加载态变化时局部刷新，不动其他卡片的折叠状态）
+// 替换某章卡片：局部刷新，不动其他卡片折叠态
 function refreshCard(i) {
   const old = document.querySelector(`.chap-card[data-chapter="${i}"]`);
   if (old) old.replaceWith(buildChapterCard(state.chapters[i], i));
 }
 
-// 逐章生成笔记：并发池（前面的章节先处理），每章到达即刷新该卡片（聚焦、稳定、可缓存）
+// 逐章生成笔记：并发池，靠前的先开工，每章到达即刷新
 const NOTES_CONCURRENCY = 4;
 async function fetchAllNotes(force = false) {
   const docId = state.docId;
@@ -401,7 +401,7 @@ async function fetchAllNotes(force = false) {
   await Promise.all(Array.from({ length: n }, () => worker()));
 }
 
-// 生词标注：逐章挑生词 → 字幕里下划线 + 小字中文
+// 生词：逐章挑 → 字幕下划线 + 小字中文
 const GLOSS_CONCURRENCY = 3;
 async function fetchAllGlossary(force = false) {
   const docId = state.docId;
@@ -425,7 +425,7 @@ async function fetchAllGlossary(force = false) {
   await Promise.all(Array.from({ length: Math.min(GLOSS_CONCURRENCY, queue.length) }, () => worker()));
 }
 
-// 已有章节的生词汇入 segIdx 索引（渲染时即时标注）
+// 章节生词汇入 segIdx 索引
 function buildGlossIndex() {
   state.glossBySeg = {};
   state.chapters.forEach((ch) => (ch.glossary || []).forEach((g) => {
@@ -433,7 +433,7 @@ function buildGlossIndex() {
   }));
 }
 
-// 某章生词到达 → 汇入索引并就地更新受影响的字幕句（不整篇重渲染）
+// 某章生词到达 → 汇入索引并就地更新对应句（不整篇重渲染）
 function applyChapterGloss(i) {
   const touched = new Set();
   (state.chapters[i].glossary || []).forEach((item) => {
@@ -447,7 +447,7 @@ function applyChapterGloss(i) {
   });
 }
 
-// 字幕文本 → HTML：命中的生词包 <ruby>（下划线 + 小字中文）
+// 字幕文本 → HTML：生词包 <ruby> 注音
 function segHTML(text, glosses) {
   if (!glosses || !glosses.length) return escapeHtml(text) + " ";
   const low = text.toLowerCase();
@@ -471,7 +471,7 @@ function segHTML(text, glosses) {
   return out;
 }
 
-// 段落中文翻译（设置里开关，译文放在每段下面）
+// 段落中文翻译（设置开关，译文挂段下）
 const TRANSLATE_CONCURRENCY = 3;
 async function ensureTranslated() {
   const docId = state.docId;
@@ -499,7 +499,7 @@ async function ensureTranslated() {
   if (state.docId === docId) setStatus("翻译完成 ✓");
 }
 
-// 就地填入已到达的译文（不整篇重渲染，避免滚动跳动）
+// 就地填译文，不整篇重渲染（免滚动跳）
 function updateTranslations() {
   const box = $("transcript");
   state.paragraphs.forEach((p, pi) => {
@@ -510,7 +510,7 @@ function updateTranslations() {
   });
 }
 
-// 找到片段 i 对应的 DOM（清洗模式只渲染段落起始 seg，取 <= i 的最近一个）
+// 找片段 i 对应 DOM（清洗模式取 <= i 的最近一个）
 function segEleFor(i) {
   const box = $("transcript");
   let el = box.querySelector(`.seg[data-idx="${i}"]`);
@@ -523,7 +523,7 @@ function segEleFor(i) {
   return best;
 }
 
-// 点要点/字幕 → 滚动到对应句并高亮闪烁，同时把视频跳到该时间
+// 点要点/字幕 → 滚动高亮对应句 + 视频跳到该时间
 function locateSeg(seg) {
   const el = segEleFor(seg);
   if (el) {
@@ -571,18 +571,18 @@ async function mountVideo(videoId) {
       controls: 0, iv_load_policy: 3, disablekb: 0, // 开 YT 原生键盘：焦点在视频上时左右键也能 ±5s
     },
     events: {
-      onReady: () => { playerReady = true; setTitleFromVideo(); initVidCtrl(); restorePos(); applyRate(parseFloat(LS.get("tq.rate") || "1")); },
+      onReady: () => { playerReady = true; setTitleFromVideo(); initVidCtrl(); restorePos(); applyRate(parseFloat(LS.get("tq.rate") || "1")); killCaptions(); },
       onStateChange: (e) => {
         setTitleFromVideo(); // 元数据有时晚于 onReady 才就绪，这里补一次
         $("vid-play").innerHTML = (e.data === YT.PlayerState.PLAYING) ? PAUSE_SVG : PLAY_SVG;
-        if (e.data === YT.PlayerState.PLAYING) startFollow();
+        if (e.data === YT.PlayerState.PLAYING) { startFollow(); killCaptions(); }
         else { stopFollow(); savePos(); }
       },
     },
   });
 }
 
-// 用真实视频名作标签页标题
+// 视频名作标签页标题
 function setTitleFromVideo() {
   const d = player && player.getVideoData && player.getVideoData();
   if (d && d.title) {
@@ -591,7 +591,7 @@ function setTitleFromVideo() {
   }
 }
 
-// 自有控制条
+// 控制条
 let vidSeeking = false, lastPosSave = 0;
 function initVidCtrl() {
   const dur = player && player.getDuration ? player.getDuration() : 0;
@@ -610,6 +610,9 @@ function updateVidCtrl(t) {
 // 播放/暂停图标（SVG，像素级居中）
 const PLAY_SVG = '<svg viewBox="0 0 24 24" width="11" height="11"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
 const PAUSE_SVG = '<svg viewBox="0 0 24 24" width="11" height="11"><path fill="currentColor" d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
+
+// 关掉 YouTube 自带字幕；模块加载时机不定，多调兜底
+function killCaptions() { try { player.unloadModule("captions"); player.unloadModule("cc"); } catch (e) {} }
 
 // 倍速：选项与 YouTube 原生一致
 const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
@@ -645,7 +648,7 @@ function seekVideo(sec) {
 function startFollow() { stopFollow(); followTimer = setInterval(syncActiveSeg, 250); }
 function stopFollow() { if (followTimer) { clearInterval(followTimer); followTimer = null; } }
 
-// 视频 → 字幕：高亮当前播放所在的句子，必要时滚动跟随（用户手动滚动后暂停跟随 4s）
+// 视频→字幕：高亮当前句，必要时跟随滚动（手动滚动后暂停 4s）
 function syncActiveSeg() {
   if (!playerReady || !player.getCurrentTime) return;
   const t = player.getCurrentTime();
@@ -667,7 +670,7 @@ function syncActiveSeg() {
   if (Date.now() > userScrollUntil) scrollSegToFraction(el);
 }
 
-// 把当前字幕句滚到紧贴视频下方，像字幕一样始终可见
+// 当前字幕句贴在视频下方，始终可见
 function scrollSegToFraction(el) {
   const pane = $("content-pane");
   const paneRect = pane.getBoundingClientRect();
@@ -678,7 +681,7 @@ function scrollSegToFraction(el) {
   if (Math.abs(delta) > 24) pane.scrollTo({ top: pane.scrollTop + delta, behavior: "smooth" });
 }
 
-// 笔记跟随播放：高亮当前章节（并滚入视野）+ 当前所在要点
+// 笔记跟随：高亮当前章节 + 所在要点
 let lastNoteCh = -1, lastNotePoint = null;
 function syncNotes(idx) {
   if (!state.chapters.length) return;
@@ -705,7 +708,7 @@ function syncNotes(idx) {
   }
 }
 
-// 把当前要点/章节滚到笔记栏竖直中部
+// 当前要点/章节滚到笔记栏中部
 function scrollNotesCenter(el) {
   el.scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -724,7 +727,7 @@ function locateChapter(i) {
   }
 }
 
-// 渲染 transcript：每段一个可定位的 span
+// 渲染 transcript：每段一个可定位 span
 function makeSeg(seg, i) {
   const span = document.createElement("span");
   span.className = "seg";
@@ -739,7 +742,7 @@ function rangeText(segs, a, b) {
   return t.trim();
 }
 
-// 按章节 + 规则分段，得到段落列表（带起始时间戳和原始文本）
+// 按章节+规则分段，得段落列表（带起始时间戳+原文）
 function computeParagraphs() {
   const segs = state.segments;
   const paras = [];
@@ -758,7 +761,7 @@ const _num = (v) => (typeof v === "number" ? v : null);
 const _endsSentence = (t) => /[.!?。！？…”"]\s*$/.test((t || "").trim());
 
 // 规则分段：把片段区间 [s,e] 切成多个"好读的段落"。
-// 只用时间戳 + 标点这两个确定性信号，不做任何 AI 猜测。返回 [[a,b],...]。
+// 只用时间戳+标点，零 AI 猜测。返回 [[a,b],...]
 function paragraphBreaks(segs, s, e, o = PARA_OPTS) {
   const out = [];
   let i = s;
@@ -786,7 +789,7 @@ function paragraphBreaks(segs, s, e, o = PARA_OPTS) {
   return out;
 }
 
-// 渲染：按段落输出；清洗模式显示 AI 清洗文本，原文模式显示原始片段
+// 渲染：按段落输出；清洗模式显示清洗文本，否则原始片段
 function renderTranscript() {
   const box = $("transcript");
   box.className = "transcript" + (state.subtitleMode ? " subtitle" : "");
@@ -954,7 +957,7 @@ function closeAskBox() {
   $("ask-box").hidden = true;
 }
 
-// 公共问答核心：流式 + Markdown 渲染。选中提问和常驻追问都走这里
+// 问答核心：流式 + Markdown；选中/常驻追问都走这里
 async function runAsk({ selectedText = "", segRange = null, question }) {
   if (!question) return;
   if (!state.docId) {
@@ -1143,7 +1146,7 @@ document.addEventListener("keydown", (e) => {
   applyRate(RATES[Math.max(0, Math.min(RATES.length - 1, idx + (up ? 1 : -1)))]);
 });
 
-// 点视频后焦点会进 YouTube iframe、吃掉键盘事件 → 立刻收回页面，保证快捷键始终有效
+// 点视频后焦点会进 iframe 吃掉键盘 → 收回页面，保证快捷键有效
 window.addEventListener("blur", () => {
   setTimeout(() => {
     const a = document.activeElement;
@@ -1242,7 +1245,7 @@ $("ask-input").addEventListener("keydown", (e) => {
   }
   if (e.key === "Escape") closeAskBox();
 });
-// 新对话：清空后端会话（下一问重开全新 session，不背旧缓存），界面保留历史 + 分隔线
+// 新对话：清空会话，下一问重开 session、不背旧缓存；历史保留+分隔线
 $("new-session").addEventListener("click", async () => {
   if (!state.docId) return;
   try {
@@ -1314,7 +1317,7 @@ function initColResize(handleId, target, side, min, max, lsKey) {
 initColResize("rz-left", $("sidebar"), "left", 220, 560, "tq.sidebarW");
 initColResize("rz-right", $("chat-pane"), "right", 280, 680, "tq.chatW");
 
-// 视频高度：往下拖 → 变高（CSS 用 --video-h，宽度按 16:9 跟随，封顶后变信箱式）
+// 视频高度：往下拖变高（--video-h，宽度按 16:9 跟随）
 $("video-resize").addEventListener("mousedown", (e) => {
   e.preventDefault();
   const startY = e.clientY;
@@ -1337,7 +1340,7 @@ $("video-resize").addEventListener("mousedown", (e) => {
   document.addEventListener("mouseup", up);
 });
 
-// 启动恢复上次拖动的尺寸
+// 恢复上次拖动尺寸
 (function applySavedLayout() {
   const sw = LS.get("tq.sidebarW"); if (sw) setColWidth($("sidebar"), parseFloat(sw));
   const cw = LS.get("tq.chatW"); if (cw) setColWidth($("chat-pane"), parseFloat(cw));
