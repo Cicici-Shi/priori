@@ -114,15 +114,13 @@ $ open [cfg] → paste a url or upload a file</pre>
           </div>
           <div id="chat" class="chat"></div>
           <div id="chat-input-bar">
-            <textarea id="chat-input" rows="3"
-                      placeholder="继续追问，无需选中（如“上一个回答没听懂，再讲细点”）…"></textarea>
-            <div class="composer-foot">
-              <span class="composer-hint">回车发送 · Shift+Enter 换行</span>
-              <button id="chat-send" class="primary send-btn" title="发送（回车）">
-                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3.4 20.4l17.45-7.48a1 1 0 0 0 0-1.84L3.4 3.6a1 1 0 0 0-1.39 1.2L4 11l9 1l-9 1l-2 6.2a1 1 0 0 0 1.4 1.2Z"/></svg>
-                <span>发送</span>
-              </button>
+            <div class="prompt-row">
+              <span class="prompt-sigil">&gt;</span>
+              <textarea id="chat-input" rows="1"
+                        placeholder="继续追问…（上一个没听懂，再讲细点）"></textarea>
+              <button id="chat-send" class="repl-send" title="发送（回车）">↵</button>
             </div>
+            <span class="composer-hint">回车发送 · Shift+Enter 换行</span>
           </div>
         </aside>
       </main>

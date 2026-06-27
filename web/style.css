@@ -424,25 +424,28 @@ ruby.gloss rt {
 /* 追问输入（多行 + 底部操作行） */
 #chat-input-bar {
   border-top: 1px solid var(--border);
-  padding: 12px 14px 14px;
-  display: flex; flex-direction: column; gap: 8px;
+  padding: 9px 12px 11px;
+  display: flex; flex-direction: column; gap: 5px;
   background: var(--surface-2);
 }
-#chat-input {
-  width: 100%;
-  border: 1px solid var(--border-strong);
-  border-radius: 14px;
-  padding: 11px 13px;
-  font-size: 14px; line-height: 1.6; font-family: inherit;
-  resize: none; min-height: 76px; max-height: 200px; outline: none;
-  background: var(--surface);
-  transition: border-color .15s, box-shadow .15s;
+.prompt-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+  padding: 8px 10px; transition: border-color .15s;
 }
-#chat-input:focus { border-color: var(--accent-strong); box-shadow: 0 0 0 3px var(--accent-soft); }
-.composer-foot { display: flex; align-items: center; justify-content: space-between; }
-.composer-hint { font-size: 11.5px; color: var(--text-3); }
-.send-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: var(--r-pill); }
-.send-btn svg { margin-top: -1px; }
+.prompt-row:focus-within { border-color: var(--accent-strong); }
+.prompt-sigil { color: var(--accent); font-weight: 700; line-height: 1.6; flex-shrink: 0; user-select: none; }
+#chat-input {
+  flex: 1; min-width: 0; border: 0; outline: none; background: none; color: var(--text);
+  font-size: 13.5px; line-height: 1.6; font-family: inherit;
+  resize: none; min-height: 22px; max-height: 200px; padding: 0;
+}
+.repl-send {
+  flex-shrink: 0; align-self: stretch; color: var(--accent); font-family: inherit;
+  font-size: 15px; padding: 0 7px; border-radius: var(--r-sm);
+}
+.repl-send:hover { background: var(--accent-soft); }
+.composer-hint { font-size: 11px; color: var(--text-3); }
 
 /* ============================ 选区交互 ============================ */
 #ask-float {

@@ -1143,6 +1143,14 @@ document.addEventListener("keydown", (e) => {
   applyRate(RATES[Math.max(0, Math.min(RATES.length - 1, idx + (up ? 1 : -1)))]);
 });
 
+// 点视频后焦点会进 YouTube iframe、吃掉键盘事件 → 立刻收回页面，保证快捷键始终有效
+window.addEventListener("blur", () => {
+  setTimeout(() => {
+    const a = document.activeElement;
+    if (a && a.tagName === "IFRAME" && a.closest("#video-pane")) a.blur();
+  }, 0);
+});
+
 // 整段中文翻译开关
 $("translate-toggle").addEventListener("change", (e) => {
   state.translateMode = e.target.checked;
