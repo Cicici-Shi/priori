@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+data/*.json
+data/*.tmp
+*.pyc
+
+log/
+*.out
+.DS_Store

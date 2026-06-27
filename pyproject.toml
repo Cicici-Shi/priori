@@ -1,0 +1,23 @@
+[project]
+name = "transcript-qa"
+version = "0.1.0"
+description = "选中即问的字幕理解工具 — 抽取 transcript，前端渲染，选中文字针对性提问（走订阅 CLI，零 API 花费）"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "youtube-transcript-api>=1.0",
+    "srt>=3.5",
+    "webvtt-py>=0.5",
+]
+
+[project.optional-dependencies]
+# 仅在转写本地音视频文件时需要；体积较大（ctranslate2 + 模型）。
+# 用 `uv sync --extra whisper` 安装。
+whisper = [
+    "faster-whisper>=1.0",
+]
+
+[tool.uv]
+package = false
