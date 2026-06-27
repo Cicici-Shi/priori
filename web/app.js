@@ -1048,7 +1048,7 @@ function addTurn(selectedText, question) {
   }
   const q = document.createElement("div");
   q.className = "q";
-  q.textContent = "Q：" + question;
+  q.textContent = question;
   turn.appendChild(q);
 
   const a = document.createElement("div");
