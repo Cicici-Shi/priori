@@ -568,7 +568,7 @@ async function mountVideo(videoId) {
     // controls:0 去掉自带控件，改用自有控制条
     playerVars: {
       rel: 0, modestbranding: 1, playsinline: 1, origin: location.origin,
-      controls: 0, iv_load_policy: 3, disablekb: 1,
+      controls: 0, iv_load_policy: 3, disablekb: 0, // 开 YT 原生键盘：焦点在视频上时左右键也能 ±5s
     },
     events: {
       onReady: () => { playerReady = true; setTitleFromVideo(); initVidCtrl(); restorePos(); applyRate(parseFloat(LS.get("tq.rate") || "1")); },
@@ -1111,7 +1111,6 @@ function togglePlay() {
   else player.playVideo();
 }
 $("vid-play").addEventListener("click", togglePlay);
-$("video-click").addEventListener("click", togglePlay); // 点视频画面也能播放/暂停
 (() => {
   const seek = $("vid-seek");
   const begin = () => { vidSeeking = true; };

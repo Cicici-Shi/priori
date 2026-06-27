@@ -321,9 +321,6 @@ ruby.gloss rt {
   border: 1px solid var(--border);
 }
 #yt-player, .video-frame iframe { width: 100%; height: 100%; border: 0; display: block; }
-/* iframe 不接收指针事件（永不抢键盘焦点，左右键/空格始终有效）；点击由上层透明遮罩接管 */
-.video-frame iframe { pointer-events: none; }
-.video-click { position: absolute; inset: 0; z-index: 1; cursor: pointer; }
 /* 隐藏视频：画面移出视野但 iframe 仍渲染（音频继续），保留上方控制条 */
 .video-pane.user-hidden .video-frame { position: absolute; width: 1px; height: 1px; left: -9999px; opacity: 0; pointer-events: none; }
 .video-pane.user-hidden .video-resize { display: none; }
