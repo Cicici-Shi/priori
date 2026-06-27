@@ -1,6 +1,4 @@
-// ------------------------------------------------------------------ //
 // 状态
-// ------------------------------------------------------------------ //
 const state = {
   docId: null,
   segments: [],
@@ -38,9 +36,7 @@ const displayName = (label) => state.speakerNames[label] || label;
 
 const $ = (id) => document.getElementById(id);
 
-// ------------------------------------------------------------------ //
 // 工具
-// ------------------------------------------------------------------ //
 function fmtTs(sec) {
   if (sec == null) return "";
   sec = Math.floor(sec);
@@ -68,9 +64,7 @@ async function postJSON(url, body) {
   return r.json();
 }
 
-// ------------------------------------------------------------------ //
 // 导入
-// ------------------------------------------------------------------ //
 async function ingestUrl() {
   const url = $("url-input").value.trim();
   if (!url) return;
@@ -156,9 +150,7 @@ function onIngested(data) {
   }
 }
 
-// ------------------------------------------------------------------ //
 // 说话人识别
-// ------------------------------------------------------------------ //
 function renderSpeakerBar() {
   const bar = $("speaker-bar");
   if (!SPEAKERS_ENABLED) { bar.hidden = true; return; }
@@ -409,9 +401,7 @@ async function fetchAllNotes(force = false) {
   await Promise.all(Array.from({ length: n }, () => worker()));
 }
 
-// ------------------------------------------------------------------ //
 // 生词标注：逐章挑生词 → 字幕里下划线 + 小字中文
-// ------------------------------------------------------------------ //
 const GLOSS_CONCURRENCY = 3;
 async function fetchAllGlossary(force = false) {
   const docId = state.docId;
@@ -481,9 +471,7 @@ function segHTML(text, glosses) {
   return out;
 }
 
-// ------------------------------------------------------------------ //
 // 段落中文翻译（设置里开关，译文放在每段下面）
-// ------------------------------------------------------------------ //
 const TRANSLATE_CONCURRENCY = 3;
 async function ensureTranslated() {
   const docId = state.docId;
@@ -547,9 +535,7 @@ function locateSeg(seg) {
   seekVideo(state.segments[seg] && state.segments[seg].start);
 }
 
-// ------------------------------------------------------------------ //
 // YouTube 播放器 ←→ 字幕联动
-// ------------------------------------------------------------------ //
 let player = null, playerReady = false, followTimer = null;
 let activeEl = null, userScrollUntil = 0, _ytReady = null;
 
@@ -673,13 +659,13 @@ function syncActiveSeg() {
   if (Date.now() > userScrollUntil) scrollSegToFraction(el);
 }
 
-// 把当前字幕句滚到「视频下方可见区」的约 1/3 处（上面留出已播内容做上下文）
+// 把当前字幕句滚到紧贴视频下方，像字幕一样始终可见
 function scrollSegToFraction(el) {
   const pane = $("content-pane");
   const paneRect = pane.getBoundingClientRect();
   const vp = $("video-pane");
   const topRef = (vp && !vp.hidden) ? vp.getBoundingClientRect().bottom : paneRect.top;
-  const target = topRef + (paneRect.bottom - topRef) / 5;
+  const target = topRef + 8; // 紧贴视频下方，像字幕一样直接看到当前句
   const delta = el.getBoundingClientRect().top - target;
   if (Math.abs(delta) > 24) pane.scrollTo({ top: pane.scrollTop + delta, behavior: "smooth" });
 }
@@ -733,9 +719,7 @@ function locateChapter(i) {
   }
 }
 
-// ------------------------------------------------------------------ //
 // 渲染 transcript：每段一个可定位的 span
-// ------------------------------------------------------------------ //
 function makeSeg(seg, i) {
   const span = document.createElement("span");
   span.className = "seg";
@@ -907,9 +891,7 @@ function segIdxOf(node) {
   return null;
 }
 
-// ------------------------------------------------------------------ //
 // 选区 → 浮动按钮
-// ------------------------------------------------------------------ //
 document.addEventListener("mouseup", (e) => {
   // 点在提问框/按钮上时不处理
   if (e.target.closest("#ask-box") || e.target.closest("#ask-float")) return;
@@ -949,9 +931,7 @@ function hideFloat() {
   $("ask-float").hidden = true;
 }
 
-// ------------------------------------------------------------------ //
 // 提问框
-// ------------------------------------------------------------------ //
 function openAskBox() {
   if (!state.selection) return;
   const box = $("ask-box");
@@ -1045,9 +1025,7 @@ function sendChat() {
   runAsk({ question });
 }
 
-// ------------------------------------------------------------------ //
 // 对话渲染
-// ------------------------------------------------------------------ //
 function addTurn(selectedText, question) {
   const chat = $("chat");
   const turn = document.createElement("div");
@@ -1094,9 +1072,7 @@ function renderChat(entries) {
   chat.scrollTop = chat.scrollHeight;
 }
 
-// ------------------------------------------------------------------ //
 // 事件绑定
-// ------------------------------------------------------------------ //
 $("url-btn").addEventListener("click", ingestUrl);
 $("url-input").addEventListener("keydown", (e) => { if (e.key === "Enter") ingestUrl(); });
 $("file-input").addEventListener("change", (e) => {

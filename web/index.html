@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Transcript Q&amp;A — 选中即问</title>
+  <title>highlight-to-learn</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -67,7 +68,6 @@
         <!-- 中：字幕 -->
         <section id="content-pane">
           <div id="video-pane" class="video-pane" hidden>
-            <div class="video-frame"><div id="yt-player"></div></div>
             <div id="vid-ctrl" class="vid-ctrl">
               <button id="vid-play" class="vid-btn" title="播放 / 暂停（空格）"><svg viewBox="0 0 24 24" width="11" height="11"><path fill="currentColor" d="M8 5v14l11-7z"/></svg></button>
               <span id="vid-cur" class="vid-time">0:00</span>
@@ -84,6 +84,7 @@
                 <option value="2">2×</option>
               </select>
             </div>
+            <div class="video-frame"><div id="yt-player"></div></div>
             <div id="video-resize" class="video-resize" title="拖动调整视频高度"></div>
           </div>
           <div id="speaker-bar" class="speaker-bar" hidden></div>
