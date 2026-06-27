@@ -537,7 +537,7 @@ function locateSeg(seg) {
 
 // YouTube 播放器 ←→ 字幕联动
 let player = null, playerReady = false, followTimer = null;
-let activeEl = null, userScrollUntil = 0, _ytReady = null;
+let activeEl = null, userScrollUntil = 0, notesScrollUntil = 0, _ytReady = null;
 
 function ensureYT() {
   if (window.YT && window.YT.Player) return Promise.resolve();
@@ -687,7 +687,7 @@ function syncNotes(idx) {
   if (ci !== lastNoteCh) {
     document.querySelectorAll(".chap-card.active").forEach((e) => e.classList.remove("active"));
     const c = document.querySelector(`.chap-card[data-chapter="${ci}"]`);
-    if (c) { c.classList.add("active"); if (Date.now() > userScrollUntil) scrollNotesCenter(c); }
+    if (c) { c.classList.add("active"); if (Date.now() > notesScrollUntil) scrollNotesCenter(c); }
     lastNoteCh = ci;
   }
   const card = document.querySelector(`.chap-card[data-chapter="${ci}"]`);
@@ -701,17 +701,13 @@ function syncNotes(idx) {
     if (lastNotePoint) lastNotePoint.classList.remove("np-current");
     if (best) best.classList.add("np-current");
     lastNotePoint = best;
-    if (Date.now() > userScrollUntil) scrollNotesCenter(best || card); // 滚到笔记栏中部
+    if (Date.now() > notesScrollUntil) scrollNotesCenter(best || card); // 滚到笔记栏中部
   }
 }
 
 // 把当前要点/章节滚到笔记栏竖直中部
 function scrollNotesCenter(el) {
-  const box = $("summary-body");
-  const boxRect = box.getBoundingClientRect();
-  const elRect = el.getBoundingClientRect();
-  const delta = (elRect.top - boxRect.top) - (boxRect.height - elRect.height) / 2;
-  box.scrollBy({ top: delta, behavior: "smooth" });
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 // 点章节卡片 → 滚动到对应字幕并高亮
@@ -1090,7 +1086,7 @@ $("file-input").addEventListener("change", (e) => {
 $("summary-refresh").addEventListener("click", () => { if (state.docId) fetchChapters(true); });
 // 用户主动滚动字幕区 → 暂停视频跟随滚动 4s，避免被来回拽
 $("content-pane").addEventListener("wheel", () => { userScrollUntil = Date.now() + 4000; }, { passive: true });
-$("summary-body").addEventListener("wheel", () => { userScrollUntil = Date.now() + 4000; }, { passive: true });
+$("summary-body").addEventListener("wheel", () => { notesScrollUntil = Date.now() + 4000; }, { passive: true });
 
 // 设置浮层（藏视频链接 + 引擎）
 function toggleSettings(show) {
@@ -1109,11 +1105,13 @@ document.addEventListener("keydown", (e) => {
 });
 
 // 自有视频控制条：播放/暂停 + 拖动进度
-$("vid-play").addEventListener("click", () => {
+function togglePlay() {
   if (!player || !playerReady) return;
   if (player.getPlayerState() === YT.PlayerState.PLAYING) player.pauseVideo();
   else player.playVideo();
-});
+}
+$("vid-play").addEventListener("click", togglePlay);
+$("video-click").addEventListener("click", togglePlay); // 点视频画面也能播放/暂停
 (() => {
   const seek = $("vid-seek");
   const begin = () => { vidSeeking = true; };
