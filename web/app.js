@@ -115,8 +115,7 @@ function onIngested(data) {
   $("read-toolbar").hidden = false;
   $("mode-raw").classList.add("active");
   $("mode-clean").classList.remove("active");
-  const srcLabel = data.video_id || data.title || "source";
-  $("doc-title").textContent = `▸ ${srcLabel}`;
+  $("doc-title").textContent = data.video_id ? "" : (data.title || ""); // 视频名等播放器就绪后填
   renderChat(data.chat || []); // 刷新后恢复历史问答
   $("settings-pop").hidden = true; // 导入后收起设置浮层
   mountVideo(data.video_id); // YouTube 源 → 嵌入吸顶播放器并联动；其他源自动隐藏
@@ -564,10 +563,9 @@ async function mountVideo(videoId) {
   document.querySelector(".video-frame").innerHTML = '<div id="yt-player"></div>';
   await ensureYT();
   player = new YT.Player("yt-player", {
-    // 用普通 youtube.com 域：复用浏览器里已登录的 YT 会话，避开「确认你不是机器人」登录墙
-    // （nocookie 域不带登录 cookie，会被当陌生访客拦下）
+    // 普通 youtube.com 域复用已登录会话，避开机器人验证墙
     videoId,
-    // controls:0 关掉 YouTube 自带控件（暂停/拖动时那一堆标题栏、推荐视频、分享按钮），改用自有控制条
+    // controls:0 去掉自带控件，改用自有控制条
     playerVars: {
       rel: 0, modestbranding: 1, playsinline: 1, origin: location.origin,
       controls: 0, iv_load_policy: 3, disablekb: 1,
@@ -587,7 +585,10 @@ async function mountVideo(videoId) {
 // 用真实视频名作标签页标题
 function setTitleFromVideo() {
   const d = player && player.getVideoData && player.getVideoData();
-  if (d && d.title) document.title = d.title;
+  if (d && d.title) {
+    document.title = d.title;
+    const el = $("doc-title"); el.textContent = d.title; el.title = d.title;
+  }
 }
 
 // 自有控制条
@@ -1338,9 +1339,7 @@ $("video-resize").addEventListener("mousedown", (e) => {
   const vh = LS.get("tq.videoH"); if (vh) document.documentElement.style.setProperty("--video-h", parseFloat(vh) + "px");
 })();
 
-// ────────────────────────────────────────────────────────────────────
 // 调试期：写死常用视频，刷新即自动载入（走缓存秒开）。调完删掉这一段。
-// ────────────────────────────────────────────────────────────────────
 const DEBUG_URL = "https://www.youtube.com/watch?v=SQ3fZ1sAqXI";
 if (DEBUG_URL) {
   $("url-input").value = DEBUG_URL;
