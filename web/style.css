@@ -258,6 +258,16 @@ main { flex: 1; display: flex; min-height: 0; }
 
 /* ============================ Transcript ============================ */
 .transcript { font-size: 14.5px; color: var(--text); }
+
+/* 网页正文阅读 */
+.transcript.article { max-width: 760px; }
+.transcript.article .para-zh { margin-left: 0; }
+.art-head { font-weight: 700; color: var(--accent-ink); margin: 22px 0 9px; line-height: 1.4; }
+.art-head:first-child { margin-top: 2px; }
+.transcript.article h2.art-head { font-size: 18px; }
+.transcript.article h3.art-head { font-size: 15.5px; }
+.art-para { margin: 0 0 12px; line-height: 1.85; }
+.transcript code { background: var(--accent-soft); color: var(--accent-ink); padding: 1px 5px; border-radius: 4px; font-size: .9em; }
 .chap-block { scroll-margin-top: 16px; border-radius: var(--r-sm); }
 .chap-block-head {
   display: flex; align-items: baseline; gap: 10px;

@@ -1,6 +1,7 @@
 // 状态
 const state = {
   docId: null,
+  kind: "video",      // video | web（网页正文阅读）
   segments: [],
   chapters: [],
   turns: [],          // [{start,end,speaker}]
@@ -15,9 +16,9 @@ const state = {
   notesLoading: new Set(), // 正在生成笔记的章节 index
   videoId: null,           // 当前 YouTube 视频 id（用于按视频存播放位置）
   glossBySeg: {},          // segIdx -> [{term, zh}] 生词标注
-  translateMode: false,    // 段落中文翻译开关
-  subtitleMode: false,     // 逐句双语对照（更细的切分 + 每句下挂中文）
-  translatedMap: {},       // 段落原文 -> 中文翻译
+  translateMode: false,    // 翻译开关：是否在原文下显示中文译文（与切分粒度无关）
+  subtitleMode: false,     // 逐句切分开关：整段 ↔ 一句一行（只管粒度，不决定翻不翻译）
+  translatedMap: {},       // 句子原文 -> 中文翻译（按句缓存：换粒度/重分章节都不失配）
 };
 
 // 说话人识别暂关（文本猜测不可靠，等声学分离）
@@ -25,7 +26,7 @@ const SPEAKERS_ENABLED = false;
 
 // 规则分段参数（纯靠时间戳 + 标点，零 AI 猜测）
 const PARA_OPTS = { maxSec: 30, maxChars: 300, gapSec: 1.4, hardSec: 55, hardGap: 2.5 }; // 正常段落
-const SUB_OPTS = { maxSec: 6, maxChars: 70, gapSec: 0.7, hardSec: 12, hardGap: 1.6 };    // 逐句字幕：碎得多
+const SUB_OPTS = { maxSec: 0, maxChars: 220, gapSec: 0, hardSec: 0, hardGap: 1.6 };      // 逐句：每个句末就断，整句不切碎
 
 const SPK_COLORS = ["#2563eb", "#d97757", "#16a34a", "#9333ea", "#ca8a04", "#0891b2"];
 const colorForSpeaker = (label) => {
@@ -95,6 +96,7 @@ async function ingestFile(file) {
 
 function onIngested(data) {
   state.docId = data.doc_id;
+  state.kind = data.kind || "video";
   state.segments = data.segments;
   state.chapters = [];
   state.turns = [];
@@ -139,11 +141,12 @@ function onIngested(data) {
   }
   renderTranscript();
   renderSpeakerBar();
-  if (state.translateMode || state.subtitleMode) ensureTranslated(); // 补齐未缓存的翻译
+  if (state.translateMode) ensureTranslated(); // 补齐未缓存的翻译（只跟翻译开关走）
 
+  const withGloss = () => { if (state.kind !== "web") fetchAllGlossary(); }; // 网页跳过生词标注
   if (hasCachedChapters) {
     setStatus("已导入 ✓（复用缓存）");
-    fetchAllNotes().then(() => fetchAllGlossary()); // 补齐尚未生成的笔记 / 生词
+    fetchAllNotes().then(withGloss); // 补齐尚未生成的笔记 / 生词
   } else {
     setStatus("已导入 ✓");
     fetchChapters(); // 首次导入：切分章节 → 笔记 → 生词
@@ -473,24 +476,26 @@ function segHTML(text, glosses) {
 
 // 段落中文翻译（设置开关，译文挂段下）
 const TRANSLATE_CONCURRENCY = 3;
+const TRANSLATE_BATCH = 12; // 每批句子数：批内连续句给模型留点上下文，又不至于一批太大
+// 翻译单位 = 句子（一个 segment）。句子必落在单个章节内，文本不随章节重新分段而变，
+// 所以译文缓存（按文本做 key）永不失配——彻底避开「章节切分 vs 翻译」并行时的缓存竞态。
 async function ensureTranslated() {
   const docId = state.docId;
   const backend = $("backend-select").value || undefined;
-  const byChapter = {};
-  state.paragraphs.forEach((p) => { (byChapter[p.ci] = byChapter[p.ci] || []).push(p); });
-  const cis = Object.keys(byChapter);
+  const texts = [...new Set(state.segments.map((s) => s.text).filter((t) => t && !state.translatedMap[t]))];
+  if (!texts.length) { if (state.docId === docId) setStatus("翻译完成 ✓"); return; }
+  const batches = [];
+  for (let i = 0; i < texts.length; i += TRANSLATE_BATCH) batches.push(texts.slice(i, i + TRANSLATE_BATCH));
   let cursor = 0, done = 0;
   async function worker() {
-    while (cursor < cis.length) {
-      const ci = cis[cursor++];
+    while (cursor < batches.length) {
+      const batch = batches[cursor++];
       if (state.docId !== docId) return;
-      const need = byChapter[ci].filter((p) => !state.translatedMap[p.raw]);
       done++;
-      if (!need.length) continue;
-      setStatus(`翻译中… ${done}/${cis.length} 章`, "loading");
+      setStatus(`翻译中… ${done}/${batches.length} 批`, "loading");
       try {
-        const data = await postJSON("/api/translate", { doc_id: docId, backend, paragraphs: need.map((p) => p.raw) });
-        (data.translated || []).forEach((t, k) => { state.translatedMap[need[k].raw] = t; });
+        const data = await postJSON("/api/translate", { doc_id: docId, backend, paragraphs: batch });
+        (data.translated || []).forEach((t, k) => { state.translatedMap[batch[k]] = t; });
         if (state.translateMode) updateTranslations();
       } catch (e) { /* 失败留空，可重开开关重试 */ }
     }
@@ -499,11 +504,23 @@ async function ensureTranslated() {
   if (state.docId === docId) setStatus("翻译完成 ✓");
 }
 
+// 段落译文 = 段内各句译文按序拼接；只要有一句还没译好就返回 null（整段显示「翻译中…」）
+function paraTranslation(p) {
+  const segs = state.segments;
+  let out = "";
+  for (let i = p.a; i <= p.b && i < segs.length; i++) {
+    const t = state.translatedMap[segs[i].text];
+    if (!t) return null;
+    out += t;
+  }
+  return out || null;
+}
+
 // 就地填译文，不整篇重渲染（免滚动跳）
 function updateTranslations() {
   const box = $("transcript");
   state.paragraphs.forEach((p, pi) => {
-    const t = state.translatedMap[p.raw];
+    const t = paraTranslation(p);
     if (!t) return;
     const el = box.querySelector(`.para-zh[data-pi="${pi}"]`);
     if (el) { el.textContent = t; el.classList.remove("pending"); }
@@ -759,6 +776,7 @@ function computeParagraphs() {
 
 const _num = (v) => (typeof v === "number" ? v : null);
 const _endsSentence = (t) => /[.!?。！？…”"]\s*$/.test((t || "").trim());
+const _endsClause = (t) => /[,;:，；：、]\s*$/.test((t || "").trim()); // 逗号等软停顿，兜底硬断时优先落这里
 
 // 规则分段：把片段区间 [s,e] 切成多个"好读的段落"。
 // 只用时间戳+标点，零 AI 猜测。返回 [[a,b],...]
@@ -768,18 +786,25 @@ function paragraphBreaks(segs, s, e, o = PARA_OPTS) {
   while (i <= e) {
     const startT = _num(segs[i].start);
     let j = i, chars = (segs[i].text || "").length;
+    let lastClause = -1; // 本段内最近一个逗号停顿的片段下标
     while (j < e) {
       const cur = segs[j], nxt = segs[j + 1];
       const curEnd = _num(cur.end) ?? _num(cur.start);
       const dur = startT == null || curEnd == null ? 0 : curEnd - startT;
       const gap = startT == null ? 0 : (_num(nxt.start) ?? curEnd ?? 0) - (curEnd ?? 0);
       const ends = _endsSentence(cur.text);
+      if (_endsClause(cur.text)) lastClause = j;
+      const runaway = chars >= o.maxChars * 2; // 无标点兜底，防止超长段
       const breakHere =
         (ends && (dur >= o.maxSec || chars >= o.maxChars || gap >= o.gapSec)) || // 句末 + 够长/有停顿
         (ends && dur >= o.hardSec) ||      // 句末 + 硬上限
         gap >= o.hardGap ||                // 明显长停顿，任何位置都断
-        chars >= o.maxChars * 2;           // 无标点兜底，防止超长段
-      if (breakHere) break;
+        runaway;
+      if (breakHere) {
+        // 纯兜底硬断（非句末、非长停顿）时，能回退到逗号就别从词中间劈
+        if (runaway && !ends && gap < o.hardGap && lastClause >= i) j = lastClause;
+        break;
+      }
       j++;
       chars += (segs[j].text || "").length;
     }
@@ -790,6 +815,50 @@ function paragraphBreaks(segs, s, e, o = PARA_OPTS) {
 }
 
 // 渲染：按段落输出；清洗模式显示清洗文本，否则原始片段
+// 网页正文渲染：标题分层 + 段落可选中提问，按标题分块（块 = 目录项，供笔记/跳转定位）
+function renderArticle(box, segs) {
+  box.classList.add("article");
+  state.paragraphs = [];
+  const chs = state.chapters;
+  let ci = -1, curBlock = null;
+  segs.forEach((s, i) => {
+    let c = chs.findIndex((x) => i >= x.start && i <= x.end);
+    if (c < 0) c = 0;
+    if (c !== ci || !curBlock) {
+      ci = c;
+      curBlock = document.createElement("div");
+      curBlock.className = "chap-block";
+      curBlock.dataset.chapter = c;
+      box.appendChild(curBlock);
+    }
+    if (s.level > 0) {
+      const h = document.createElement(s.level <= 2 ? "h2" : "h3");
+      h.className = "art-head";
+      h.innerHTML = mdInline(s.text);
+      curBlock.appendChild(h);
+    } else {
+      const para = document.createElement("p");
+      para.className = "art-para";
+      const span = document.createElement("span");
+      span.className = "seg";
+      span.dataset.idx = i;
+      span.innerHTML = mdInline(s.text); // 渲染加粗 / 行内代码
+      para.appendChild(span);
+      curBlock.appendChild(para);
+      const pi = state.paragraphs.length;
+      state.paragraphs.push({ ci: c, a: i, b: i, raw: s.text });
+      if (state.translateMode) {
+        const zh = document.createElement("div");
+        zh.className = "para-zh"; zh.dataset.pi = pi;
+        const t = state.translatedMap[s.text];
+        zh.textContent = t || "翻译中…";
+        if (!t) zh.classList.add("pending");
+        curBlock.appendChild(zh);
+      }
+    }
+  });
+}
+
 function renderTranscript() {
   const box = $("transcript");
   box.className = "transcript" + (state.subtitleMode ? " subtitle" : "");
@@ -797,6 +866,7 @@ function renderTranscript() {
   activeEl = null; // DOM 重建，旧高亮引用失效；跟随循环会重新打点
   const segs = state.segments;
   if (!segs.length) return;
+  if (state.kind === "web") { renderArticle(box, segs); return; } // 网页正文走独立渲染
   state.paragraphs = computeParagraphs();
   const hasChapters = state.chapters.length > 0;
 
@@ -842,11 +912,11 @@ function renderTranscript() {
     para.appendChild(text);
     container.appendChild(para);
 
-    if (state.translateMode || state.subtitleMode) { // 译文行，挂在该段/句下面
+    if (state.translateMode) { // 译文行，挂在该段/句下面；是否显示只看翻译开关
       const zh = document.createElement("div");
       zh.className = "para-zh";
       zh.dataset.pi = pi;
-      const t = state.translatedMap[p.raw];
+      const t = paraTranslation(p);
       zh.textContent = t || "翻译中…";
       if (!t) zh.classList.add("pending");
       container.appendChild(zh);
@@ -1154,18 +1224,18 @@ window.addEventListener("blur", () => {
   }, 0);
 });
 
-// 整段中文翻译开关
+// 翻译开关（是否显示译文，独立于切分粒度）
 $("translate-toggle").addEventListener("change", (e) => {
   state.translateMode = e.target.checked;
   LS.set("tq.translate", e.target.checked ? "1" : "0"); // 开关状态存本地
   renderTranscript();
-  if (state.translateMode || state.subtitleMode) ensureTranslated();
+  if (state.translateMode) ensureTranslated();
 });
 $("subtitle-toggle").addEventListener("change", (e) => {
   state.subtitleMode = e.target.checked;
   LS.set("tq.subtitle", e.target.checked ? "1" : "0");
-  renderTranscript(); // 切换粒度（逐句 ↔ 段落）
-  if (state.subtitleMode || state.translateMode) ensureTranslated();
+  renderTranscript(); // 只切粒度（逐句 ↔ 段落）
+  if (state.translateMode) ensureTranslated(); // 粒度变了，开着翻译就补齐新切分的译文
 });
 $("hide-video-toggle").addEventListener("change", (e) => {
   LS.set("tq.hidevideo", e.target.checked ? "1" : "0");
@@ -1348,7 +1418,7 @@ $("video-resize").addEventListener("mousedown", (e) => {
 })();
 
 // 调试期：写死常用视频，刷新即自动载入（走缓存秒开）。调完删掉这一段。
-const DEBUG_URL = "https://www.youtube.com/watch?v=SQ3fZ1sAqXI";
+const DEBUG_URL = "https://www.youtube.com/watch?v=iJVJwmCKW9o";
 if (DEBUG_URL) {
   $("url-input").value = DEBUG_URL;
   ingestUrl();

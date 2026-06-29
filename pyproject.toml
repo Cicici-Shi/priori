@@ -1,7 +1,7 @@
 [project]
-name = "highlight-to-learn"
+name = "priori"
 version = "0.1.0"
-description = "看视频 / 读文章学习：选中即问 AI、自动笔记、双语字幕。走订阅 CLI，零 API 花费。"
+description = "Every video and paper assumes a body of a priori knowledge. Priori supplies the parts you're missing."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -10,6 +10,7 @@ dependencies = [
     "youtube-transcript-api>=1.0",
     "srt>=3.5",
     "webvtt-py>=0.5",
+    "trafilatura>=2.0",
 ]
 
 [project.optional-dependencies]

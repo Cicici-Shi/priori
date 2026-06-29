@@ -17,7 +17,7 @@ from . import ingest, llm, prompts, store
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
-app = FastAPI(title="highlight-to-learn")
+app = FastAPI(title="Priori")
 
 
 @app.middleware("http")
@@ -41,6 +41,7 @@ def _doc_response(doc_id: str, doc: dict) -> dict:
     return {
         "doc_id": doc_id,
         "title": doc.get("title"),
+        "kind": doc.get("kind", "video"),  # video | web
         "video_id": ingest.extract_video_id(doc.get("source") or ""),  # YouTube 源才有，用于嵌入播放器
         "segments": doc["segments"],
         "chapters": doc.get("chapters", []),
@@ -55,17 +56,25 @@ def _doc_response(doc_id: str, doc: dict) -> dict:
 
 @app.post("/api/ingest/url")
 def ingest_url(body: IngestUrl):
-    # 先按视频 id / URL 去重：同一视频已导入过就直接复用（含章节/说话人/会话缓存）
-    key = ingest.extract_video_id(body.url) or body.url.strip()
+    # 视频 → 抓字幕；其他链接 → 抓网页正文。按 key 去重复用缓存。
+    vid = ingest.extract_video_id(body.url)
+    key = vid or body.url.strip()
     existing_id = store.doc_id_for_key(key)
     if existing_id and (doc := store.load(existing_id)):
         return _doc_response(existing_id, doc)
 
     try:
-        segments, title = ingest.from_youtube(body.url)
+        if vid:
+            segments, title = ingest.from_youtube(body.url)
+            chapters = None
+        else:
+            segments, title = ingest.from_web(body.url)
+            chapters = ingest.web_chapters(segments)  # 网页：按标题预切章节（= 目录）
     except ingest.IngestError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    doc_id, reused = store.create_keyed(key, segments, source=body.url, title=title)
+
+    doc_id, _ = store.create_keyed(key, segments, source=body.url, title=title)
+    store.update(doc_id, kind="video" if vid else "web", **({"chapters": chapters} if chapters else {}))
     doc = store.load(doc_id)
     return _doc_response(doc_id, doc)
 
@@ -513,28 +522,43 @@ def clean(body: CleanBody):
     return {"cleaned": result}
 
 
+def _batch_translate(backend, texts: list[str]) -> list[str]:
+    """整批翻译，返回与 texts 严格 1:1 对齐的译文。
+
+    `[[n]]` 编号回填法的致命点：模型把相邻短句合并成一条、再顺移后面的编号，
+    解析器信了模型编号就会整体错位一格。故这里校验编号 0..n-1 是否齐全且非空，
+    一旦不齐就判定对齐不可信 → 逐句单独重翻（一句一请求，无编号可错）。"""
+    numbered = "\n\n".join(f"[[{k}]] {p}" for k, p in enumerate(texts))
+    answer, _ = backend.ask(prompts.TRANSLATE_INSTRUCTION + "\n\n" + numbered, None)
+    parsed = _parse_clean(answer)
+    if all((parsed.get(k) or "").strip() for k in range(len(texts))):
+        return [parsed[k].strip() for k in range(len(texts))]
+    out = []
+    for p in texts:
+        ans, _ = backend.ask(prompts.TRANSLATE_INSTRUCTION + "\n\n[[0]] " + p, None)
+        one = _parse_clean(ans)
+        out.append((one.get(0) or ans or "").strip() or p)
+    return out
+
+
 @app.post("/api/translate")
 def translate(body: CleanBody):
-    """段落级中译：每段独立翻译，按内容哈希缓存（前端可并行分批请求）。"""
+    """逐句中译：每句独立翻译，按句子文本缓存（前端并行分批请求）。"""
     doc = store.load(body.doc_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="文档不存在，请重新导入。")
 
     cache = dict(doc.get("translated_map", {}))
     new: dict[str, str] = {}
-    todo = [(i, p) for i, p in enumerate(body.paragraphs) if p not in cache]
+    todo = [p for p in body.paragraphs if p not in cache]
 
     if todo:
-        numbered = "\n\n".join(f"[[{k}]] {p}" for k, (_i, p) in enumerate(todo))
-        prompt = prompts.TRANSLATE_INSTRUCTION + "\n\n" + numbered
         try:
             backend = llm.get_backend(body.backend, body.model)
-            answer, _ = backend.ask(prompt, None)  # 无状态，不污染问答会话
+            for p, zh in zip(todo, _batch_translate(backend, todo)):
+                cache[p] = new[p] = zh
         except llm.LLMError as e:
             raise HTTPException(status_code=502, detail=str(e))
-        parsed = _parse_clean(answer)  # 同样的 [[n]] 分段格式
-        for k, (_i, p) in enumerate(todo):
-            cache[p] = new[p] = (parsed.get(k) or "").strip() or p
     store.merge_map(body.doc_id, "translated_map", new)  # 原子合并，避免并发覆盖
 
     result = [cache.get(p, p) for p in body.paragraphs]

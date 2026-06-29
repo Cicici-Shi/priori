@@ -1,9 +1,11 @@
-# highlight-to-learn
+# Priori
 
-> **读文章、看视频时，选中任意一句就问 AI —— 带着整篇上下文，就地讲清。**
-> Reading or watching anything? **Select any line and ask AI** — context-aware, right where you are. Auto notes, optional bilingual subtitles, all on your Claude subscription (no API key).
+> **The *a priori* you were missing** — everything a video or article assumes you already know, backfilled right where you get lost.
+> 任何视频 / 长文都预设了一套"你早该懂"的先验（*a priori*）知识 —— Priori 把你缺的那块就地补上，不用先去补课。
+>
+> <sub>*name from* **a priori** *— the knowledge you're assumed to already have.*</sub>
 
-![highlight-to-learn — 选中即问 · 双语字幕 · 自动笔记，终端风界面](docs/screenshot.png)
+![Priori — 补齐内容预设你懂的背景 · 选中即问 · 双语字幕，终端风界面](docs/screenshot.png)
 
 把任何 YouTube 视频、播客、文章变成**能对话、能精读、能复习**的材料：看到不懂的（一个词、一句话、一个梗）**划一下直接问**，AI 带着整篇上下文讲给你听。内容是外语？**双语字幕逐句对照 + 生词标注**帮你读下去。全程走 **Claude 订阅 CLI**，**零 API 花费**。
 
@@ -33,8 +35,8 @@
 前置：[`uv`](https://docs.astral.sh/uv/)（Python 3.12）+ 已登录的 [`claude` CLI](https://docs.claude.com/claude-code)（Claude 订阅）。
 
 ```bash
-git clone https://github.com/Cicici-Shi/highlight-to-learn.git
-cd highlight-to-learn
+git clone https://github.com/Cicici-Shi/priori.git
+cd priori
 uv sync
 uv run uvicorn app.main:app --port 8000 --reload
 # 浏览器打开 http://localhost:8000

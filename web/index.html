@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>highlight-to-learn</title>
+  <title>Priori</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="stylesheet" href="/style.css" />
 </head>
@@ -13,7 +13,7 @@
     <nav id="sidebar">
       <div class="brand">
         <span class="prompt-dot"></span>
-        <span class="brand-name">highlight-to-learn</span>
+        <span class="brand-name">priori</span>
         <button id="settings-btn" class="icon-btn ghost-dark" title="设置 / 导入">[cfg]</button>
       </div>
       <div id="doc-title" class="doc-title" title=""></div>
@@ -37,10 +37,10 @@
           <span id="ingest-status" class="status"></span>
         </div>
         <div class="set-row">
-          <label class="set-check"><input type="checkbox" id="translate-toggle" /> 整段中文翻译（并行）</label>
+          <label class="set-check"><input type="checkbox" id="translate-toggle" /> 中文翻译（在原文下显示译文）</label>
         </div>
         <div class="set-row">
-          <label class="set-check"><input type="checkbox" id="subtitle-toggle" /> 逐句双语对照（字幕式）</label>
+          <label class="set-check"><input type="checkbox" id="subtitle-toggle" /> 逐句切分（整段 ↔ 一句一行）</label>
         </div>
         <div class="set-row">
           <label class="set-check"><input type="checkbox" id="hide-video-toggle" /> 隐藏视频（保留播放控制）</label>
@@ -95,7 +95,7 @@
           <div id="speaker-bar" class="speaker-bar" hidden></div>
 
           <div id="transcript" class="transcript empty">
-            <pre class="boot">highlight-to-learn v0.1.0  ·  opus-4.8
+            <pre class="boot">priori v0.1.0  ·  opus-4.8
 [ok] runtime ready
 [ok] cache warm
 [--] no source loaded
