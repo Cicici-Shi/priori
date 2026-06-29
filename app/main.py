@@ -104,6 +104,38 @@ async def ingest_file(file: UploadFile = File(...)):
     return _doc_response(doc_id, doc)
 
 
+@app.get("/api/docs")
+def docs_list():
+    """历史记录：最近打开/活跃的文档元信息列表（不含正文）。"""
+    return {"docs": store.list_docs()}
+
+
+@app.get("/api/doc/{doc_id}")
+def doc_get(doc_id: str):
+    """按 id 直接加载一篇历史文档（供历史记录点击回看，无需重抓）。"""
+    doc = store.load(doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文档不存在或已删除。")
+    store.touch(doc_id)  # 回看即置顶
+    return _doc_response(doc_id, doc)
+
+
+class TitleBody(BaseModel):
+    title: str = ""
+
+
+@app.post("/api/doc/{doc_id}/title")
+def doc_set_title(doc_id: str, body: TitleBody):
+    """写回文档标题。YouTube 真实片名要等播放器就绪才拿得到（入库时只有 id），
+    前端拿到后调这里存一下，历史列表就显示真名而非 "YouTube <id>"。"""
+    if store.load(doc_id) is None:
+        raise HTTPException(status_code=404, detail="文档不存在。")
+    t = body.title.strip()
+    if t:
+        store.update(doc_id, title=t)
+    return {"ok": True}
+
+
 # --------------------------------------------------------------------------- #
 # /ask — 选中片段 + 问题 → 答案（多轮靠 session 续接）
 # --------------------------------------------------------------------------- #

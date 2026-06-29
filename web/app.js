@@ -65,6 +65,54 @@ async function postJSON(url, body) {
   return r.json();
 }
 
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ detail: r.statusText }));
+    throw new Error(err.detail || "请求失败");
+  }
+  return r.json();
+}
+
+// 历史记录：列出最近打开的文档，点击按 id 直接回看（不重抓）
+async function loadHistory() {
+  try {
+    const { docs } = await getJSON("/api/docs");
+    renderHistory(docs || []);
+  } catch { /* 历史拉取失败不影响主流程 */ }
+}
+
+function renderHistory(docs) {
+  const box = $("history-list");
+  box.innerHTML = "";
+  docs.forEach((d) => {
+    const item = document.createElement("div");
+    item.className = "hist-item" + (d.doc_id === state.docId ? " current" : "");
+    const display = d.title || d.source || d.doc_id;
+    // tooltip 跟显示名一致（截断后 hover 能看全），来源不同再附一行
+    item.title = d.source && d.source !== display ? display + "\n" + d.source : display;
+    const kind = document.createElement("span");
+    kind.className = "hist-kind";
+    kind.textContent = d.kind === "web" ? "▤" : "▶";
+    const name = document.createElement("span");
+    name.className = "hist-name";
+    name.textContent = display;
+    item.append(kind, name);
+    item.addEventListener("click", () => loadDocById(d.doc_id));
+    box.appendChild(item);
+  });
+}
+
+async function loadDocById(id) {
+  if (id === state.docId) return; // 已是当前文档，不重复加载；面板保持打开方便继续浏览
+  setStatus("正在加载…", "loading");
+  try {
+    onIngested(await getJSON("/api/doc/" + id)); // 面板不收起，可继续点别的历史
+  } catch (e) {
+    setStatus("加载失败：" + e.message, "error");
+  }
+}
+
 // 导入
 async function ingestUrl() {
   const url = $("url-input").value.trim();
@@ -73,6 +121,7 @@ async function ingestUrl() {
   try {
     const data = await postJSON("/api/ingest/url", { url });
     onIngested(data);
+    toggleSettings(false); // 主动导入后收起面板
   } catch (e) {
     setStatus("导入失败：" + e.message, "error");
   }
@@ -89,6 +138,7 @@ async function ingestFile(file) {
       throw new Error(err.detail || "处理失败");
     }
     onIngested(await r.json());
+    toggleSettings(false); // 主动导入后收起面板
   } catch (e) {
     setStatus("导入失败：" + e.message, "error");
   }
@@ -97,6 +147,7 @@ async function ingestFile(file) {
 function onIngested(data) {
   state.docId = data.doc_id;
   state.kind = data.kind || "video";
+  state.docTitle = data.title || ""; // 记下入库标题，用于判断 YouTube 真片名是否需要写回
   state.segments = data.segments;
   state.chapters = [];
   state.turns = [];
@@ -119,7 +170,6 @@ function onIngested(data) {
   $("mode-clean").classList.remove("active");
   $("doc-title").textContent = data.video_id ? "" : (data.title || ""); // 视频名等播放器就绪后填
   renderChat(data.chat || []); // 刷新后恢复历史问答
-  $("settings-pop").hidden = true; // 导入后收起设置浮层
   mountVideo(data.video_id); // YouTube 源 → 嵌入吸顶播放器并联动；其他源自动隐藏
   applyHideVideo(); // 恢复「隐藏视频」开关
 
@@ -151,6 +201,7 @@ function onIngested(data) {
     setStatus("已导入 ✓");
     fetchChapters(); // 首次导入：切分章节 → 笔记 → 生词
   }
+  loadHistory(); // 刷新历史：把刚打开的置顶并高亮为当前
 }
 
 // 说话人识别
@@ -605,6 +656,10 @@ function setTitleFromVideo() {
   if (d && d.title) {
     document.title = d.title;
     const el = $("doc-title"); el.textContent = d.title; el.title = d.title;
+    if (state.docId && d.title !== state.docTitle) { // 首次拿到真片名 → 写回，历史列表显示真名
+      state.docTitle = d.title;
+      postJSON("/api/doc/" + state.docId + "/title", { title: d.title }).then(loadHistory).catch(() => {});
+    }
   }
 }
 
@@ -1416,6 +1471,8 @@ $("video-resize").addEventListener("mousedown", (e) => {
   const cw = LS.get("tq.chatW"); if (cw) setColWidth($("chat-pane"), parseFloat(cw));
   const vh = LS.get("tq.videoH"); if (vh) document.documentElement.style.setProperty("--video-h", parseFloat(vh) + "px");
 })();
+
+loadHistory(); // 启动即拉一次历史列表
 
 // 调试期：写死常用视频，刷新即自动载入（走缓存秒开）。调完删掉这一段。
 const DEBUG_URL = "https://www.youtube.com/watch?v=iJVJwmCKW9o";

@@ -70,6 +70,33 @@ def load(doc_id: str) -> dict[str, Any] | None:
         return json.load(f)
 
 
+def touch(doc_id: str) -> None:
+    """更新文件 mtime（不改内容），让"刚打开回看"的文档在历史列表里冒到最前。"""
+    p = _path(doc_id)
+    if p.exists():
+        p.touch()
+
+
+def list_docs(limit: int = 50) -> list[dict[str, Any]]:
+    """列出已存文档的元信息（不含 segments），按文件修改时间倒序——最近打开/活跃的在前。"""
+    items: list[dict[str, Any]] = []
+    for p in DATA_DIR.glob("*.json"):
+        try:
+            with p.open(encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue  # 跳过损坏 / 半写文件
+        items.append({
+            "doc_id": d.get("doc_id") or p.stem,
+            "title": d.get("title") or "",
+            "source": d.get("source") or "",
+            "kind": d.get("kind", "video"),
+            "ts": p.stat().st_mtime,
+        })
+    items.sort(key=lambda x: x["ts"], reverse=True)
+    return items[:limit]
+
+
 def _write(doc_id: str, doc: dict[str, Any]) -> None:
     """无锁写盘（原子 replace）。调用方需自行持有 _lock。"""
     tmp = _path(doc_id).with_suffix(".json.tmp")
