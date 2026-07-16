@@ -205,3 +205,16 @@ def follow_up(selected: str, question: str, seg_range: list[int] | None,
     if selected:
         return f"{_selection_block(selected, seg_range, segments)}\n\n用户的问题：{question}"
     return f"用户的问题（针对整篇 transcript）：{question}"
+
+
+def with_image(prompt: str) -> str:
+    """用户就某张图提问时，在最前面加一句说明。
+
+    图片本身作为真正的 image content block 随消息附上（见 llm._stream_input_message），模型直接
+    看得见，无需任何"打开本地文件"的动作——这里只点明"这条问的就是这张图"。
+    """
+    return (
+        "用户正在就一张图片提问，图片已随本条消息附上。请看清图里画了什么"
+        "（图表 / 截图 / 示意图等），再结合上下文用简体中文回答。\n\n"
+        + prompt
+    )

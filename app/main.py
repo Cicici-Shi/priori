@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -41,6 +41,7 @@ def _doc_response(doc_id: str, doc: dict) -> dict:
     return {
         "doc_id": doc_id,
         "title": doc.get("title"),
+        "source": doc.get("source"),  # 原始链接/文件名，前端切文档时回填 URL 输入框
         "kind": doc.get("kind", "video"),  # video | web
         "video_id": ingest.extract_video_id(doc.get("source") or ""),  # YouTube 源才有，用于嵌入播放器
         "segments": doc["segments"],
@@ -67,6 +68,10 @@ def ingest_url(body: IngestUrl):
         if vid:
             segments, title = ingest.from_youtube(body.url)
             chapters = None
+        elif ingest.is_x_url(body.url):
+            # X 长文正文只在登录态里，走浏览器抓（见 ingest.from_x_article）
+            segments, title = ingest.from_x_article(body.url)
+            chapters = ingest.web_chapters(segments)
         else:
             segments, title = ingest.from_web(body.url)
             chapters = ingest.web_chapters(segments)  # 网页：按标题预切章节（= 目录）
@@ -145,8 +150,23 @@ class AskBody(BaseModel):
     question: str
     selected_text: str = ""
     seg_range: list[int] | None = None
+    image: str | None = None  # 针对某张图提问时：图片 URL，后端按需拉字节当真图喂模型
     backend: str | None = None  # 可覆盖默认引擎
     model: str | None = None  # 可覆盖默认模型（仅 claude 引擎）
+
+
+def _ask_images(image: str | None) -> list[tuple[bytes, str]] | None:
+    """就某张图提问时，按需拉那张图的字节，作为真正的 image block 喂给模型（不落盘）。
+
+    拉不到（坏链接 / 非 http，如旧文档存的本地文件名）就返回 None，退化成纯文本问答。
+    """
+    if not image:
+        return None
+    try:
+        data, media_type = ingest.fetch_image_bytes(image)
+    except ingest.IngestError:
+        return None
+    return [(data, media_type)]
 
 
 class SummaryBody(BaseModel):
@@ -491,10 +511,13 @@ def ask(body: AskBody):
         prompt = prompts.follow_up(body.selected_text, body.question, body.seg_range, segments)
     else:
         prompt = prompts.first_turn(segments, body.selected_text, body.question, body.seg_range)
+    images = _ask_images(body.image)
+    if images:
+        prompt = prompts.with_image(prompt)
 
     try:
         backend = llm.get_backend(body.backend, body.model)
-        answer, new_session = backend.ask(prompt, session_id)
+        answer, new_session = backend.ask(prompt, session_id, images=images)
     except llm.LLMError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -610,6 +633,9 @@ def ask_stream(body: AskBody):
         prompt = prompts.follow_up(body.selected_text, body.question, body.seg_range, segments)
     else:
         prompt = prompts.first_turn(segments, body.selected_text, body.question, body.seg_range)
+    images = _ask_images(body.image)
+    if images:
+        prompt = prompts.with_image(prompt)
 
     try:
         backend = llm.get_backend(body.backend, body.model)
@@ -619,7 +645,7 @@ def ask_stream(body: AskBody):
     def gen():
         acc = []
         try:
-            for kind, val in backend.ask_stream(prompt, session_id):
+            for kind, val in backend.ask_stream(prompt, session_id, images):
                 if kind == "text":
                     acc.append(val)
                     yield json.dumps({"type": "delta", "text": val}, ensure_ascii=False) + "\n"
@@ -650,5 +676,21 @@ def ask_stream(body: AskBody):
 def index():
     return FileResponse(WEB_DIR / "index.html")
 
+
+@app.get("/img")
+def img_proxy(u: str):
+    """按需图片代理：拿原始 URL 后端拉字节直出（不落盘）。前端所有 img_url 都走这里显示。"""
+    try:
+        data, media_type = ingest.fetch_image_bytes(u)
+    except ingest.IngestError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return Response(content=data, media_type=media_type,
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+# 兼容旧文档里已下到 data/img 的图（新文档不再落盘，一律走 /img 代理）。须在 "/" 之前挂。
+_MEDIA_DIR = store.DATA_DIR / "img"
+_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/media", StaticFiles(directory=_MEDIA_DIR), name="media")
 
 app.mount("/", StaticFiles(directory=WEB_DIR), name="web")

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -28,11 +29,29 @@ class LLMError(Exception):
     """对用户可见的 LLM 调用失败。"""
 
 
+# 一张待喂给模型的图：(原始字节, media_type)。带图时走 stream-json 输入，图作为真正的
+# image content block 直接进模型视野——不落盘、不靠"让模型自己去 Read 本地文件"。
+Image = tuple[bytes, str]
+
+
+def _stream_input_message(prompt: str, images: list[Image]) -> str:
+    """构造 `--input-format stream-json` 要吃的一条 user message（text + image blocks）。"""
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    for data, media_type in images:
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type,
+                       "data": base64.b64encode(data).decode()},
+        })
+    return json.dumps({"type": "user", "message": {"role": "user", "content": content}})
+
+
 class LLMBackend(Protocol):
     name: str
 
-    def ask(self, prompt: str, session_id: str | None) -> tuple[str, str]:
-        """返回 (answer, session_id)。session_id 为空表示开新会话。"""
+    def ask(self, prompt: str, session_id: str | None,
+            images: list[Image] | None = None) -> tuple[str, str]:
+        """返回 (answer, session_id)。session_id 为空表示开新会话。images 非空时随图提问。"""
         ...
 
 
@@ -45,7 +64,23 @@ class ClaudeCLIBackend:
             raise LLMError("找不到 `claude` 命令，请确认已安装并登录 Claude Code。")
         self.model = model or DEFAULT_CLAUDE_MODEL
 
-    def ask(self, prompt: str, session_id: str | None) -> tuple[str, str]:
+    def ask(self, prompt: str, session_id: str | None,
+            images: list[Image] | None = None) -> tuple[str, str]:
+        # 带图：走 stream-json 输入把图当真图喂进去，复用流式路径累积成整段答案。
+        if images:
+            acc, new_session = [], session_id or ""
+            for kind, val in self.ask_stream(prompt, session_id, images):
+                if kind == "text":
+                    acc.append(val)
+                elif kind == "session":
+                    new_session = val or new_session
+                elif kind == "error":
+                    raise LLMError(val)
+            answer = "".join(acc).strip()
+            if not answer:
+                raise LLMError("claude 返回了空答案。")
+            return answer, new_session
+
         cmd = [self.bin, "-p", prompt, "--output-format", "json"]
         if self.model:
             cmd += ["--model", self.model]
@@ -78,16 +113,30 @@ class ClaudeCLIBackend:
             raise LLMError("claude 返回了空答案。")
         return answer, new_session
 
-    def ask_stream(self, prompt: str, session_id: str | None):
-        """流式生成。yield ("text", 增量) 若干次，最后 yield ("session", id) 或 ("error", msg)。"""
-        cmd = [self.bin, "-p", prompt, "--output-format", "stream-json",
-               "--include-partial-messages", "--verbose"]
+    def ask_stream(self, prompt: str, session_id: str | None,
+                   images: list[Image] | None = None):
+        """流式生成。yield ("text", 增量) 若干次，最后 yield ("session", id) 或 ("error", msg)。
+
+        images 非空时，prompt+图作为一条 user message 从 stdin 走 stream-json 输入
+        （`--input-format stream-json` 必须搭 `--output-format stream-json`）。
+        """
+        if images:
+            cmd = [self.bin, "-p", "--input-format", "stream-json",
+                   "--output-format", "stream-json", "--include-partial-messages", "--verbose"]
+        else:
+            cmd = [self.bin, "-p", prompt, "--output-format", "stream-json",
+                   "--include-partial-messages", "--verbose"]
         if self.model:
             cmd += ["--model", self.model]
         if session_id:
             cmd += ["--resume", session_id]
 
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdin = subprocess.PIPE if images else None
+        proc = subprocess.Popen(cmd, stdin=stdin, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+        if images:
+            proc.stdin.write(_stream_input_message(prompt, images))
+            proc.stdin.close()  # EOF → CLI 处理这条消息
         new_session = session_id or ""
         got_text = False
         try:
@@ -131,7 +180,10 @@ class CodexCLIBackend:
         if not self.bin:
             raise LLMError("找不到 `codex` 命令。安装 Codex CLI 并用 ChatGPT 账号登录后可用。")
 
-    def ask(self, prompt: str, session_id: str | None) -> tuple[str, str]:
+    def ask(self, prompt: str, session_id: str | None,
+            images: list[Image] | None = None) -> tuple[str, str]:
+        if images:
+            raise LLMError("codex 引擎暂不支持就图片提问，请切到 claude 引擎。")
         # 预留实现：codex exec [resume <id>] --json。具体字段以装上后的版本为准。
         if session_id:
             cmd = [self.bin, "exec", "resume", session_id, prompt, "--json"]

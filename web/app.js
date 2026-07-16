@@ -147,6 +147,8 @@ async function ingestFile(file) {
 function onIngested(data) {
   state.docId = data.doc_id;
   state.kind = data.kind || "video";
+  // 切换文档时把 URL 输入框同步成当前文档的链接（文件来源没有 URL，则清空避免残留旧链接）
+  $("url-input").value = /^https?:\/\//.test(data.source || "") ? data.source : "";
   state.docTitle = data.title || ""; // 记下入库标题，用于判断 YouTube 真片名是否需要写回
   state.segments = data.segments;
   state.chapters = [];
@@ -886,20 +888,36 @@ function renderArticle(box, segs) {
       curBlock.dataset.chapter = c;
       box.appendChild(curBlock);
     }
-    if (s.level > 0) {
+    if (s.type === "image") {
+      // 图片块：可点 → 针对这张图提问（后端按需拉字节当真图喂给模型看）
+      const fig = document.createElement("figure");
+      fig.className = "art-fig seg";
+      fig.dataset.idx = i;
+      const im = document.createElement("img");
+      // 新文档存 img_url（走 /img 代理拉流）；旧文档存本地文件名 img（走 /media）
+      im.src = s.img_url ? "/img?u=" + encodeURIComponent(s.img_url) : "/media/" + s.img;
+      im.alt = s.alt || "";
+      im.loading = "lazy";
+      fig.appendChild(im);
+      if (s.alt) {
+        const cap = document.createElement("figcaption");
+        cap.textContent = s.alt;
+        fig.appendChild(cap);
+      }
+      fig.addEventListener("click", () => askAboutImage(i, s, fig));
+      curBlock.appendChild(fig);
+    } else if (s.level > 0) {
       const h = document.createElement(s.level <= 2 ? "h2" : "h3");
       h.className = "art-head";
       h.innerHTML = mdInline(s.text);
       curBlock.appendChild(h);
     } else {
-      const para = document.createElement("p");
-      para.className = "art-para";
-      const span = document.createElement("span");
-      span.className = "seg";
-      span.dataset.idx = i;
-      span.innerHTML = mdInline(s.text); // 渲染加粗 / 行内代码
-      para.appendChild(span);
-      curBlock.appendChild(para);
+      // 段落 / 列表 / 表格 / 代码：整块走块级 Markdown 渲染，保留原排版
+      const block = document.createElement("div");
+      block.className = "art-block seg";
+      block.dataset.idx = i;
+      block.innerHTML = mdRender(s.text);
+      curBlock.appendChild(block);
       const pi = state.paragraphs.length;
       state.paragraphs.push({ ci: c, a: i, b: i, raw: s.text });
       if (state.translateMode) {
@@ -912,6 +930,20 @@ function renderArticle(box, segs) {
       }
     }
   });
+}
+
+// 点图提问：选区设为这张图，浮出 ask 按钮（带 image URL，问时后端拉字节当真图喂模型）
+function askAboutImage(idx, seg, figEl) {
+  state.selection = {
+    text: seg.alt ? "图片：" + seg.alt : "（这张图片）",
+    segRange: [idx, idx],
+    image: seg.img_url || seg.img,
+  };
+  const rect = figEl.getBoundingClientRect();
+  const btn = $("ask-float");
+  btn.hidden = false;
+  btn.style.left = window.scrollX + rect.left + "px";
+  btn.style.top = window.scrollY + rect.bottom + 8 + "px";
 }
 
 function renderTranscript() {
@@ -1083,7 +1115,7 @@ function closeAskBox() {
 }
 
 // 问答核心：流式 + Markdown；选中/常驻追问都走这里
-async function runAsk({ selectedText = "", segRange = null, question }) {
+async function runAsk({ selectedText = "", segRange = null, question, image = null }) {
   if (!question) return;
   if (!state.docId) {
     setStatus("请先导入一个链接或文件。", "error");
@@ -1099,7 +1131,7 @@ async function runAsk({ selectedText = "", segRange = null, question }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         doc_id: state.docId, question,
-        selected_text: selectedText, seg_range: segRange, backend,
+        selected_text: selectedText, seg_range: segRange, image, backend,
       }),
     });
     if (!r.ok) {
@@ -1145,7 +1177,7 @@ function send() {
   if (!question || !state.selection) return;
   const sel = state.selection;
   closeAskBox();
-  runAsk({ selectedText: sel.text, segRange: sel.segRange, question });
+  runAsk({ selectedText: sel.text, segRange: sel.segRange, question, image: sel.image || null });
 }
 
 // 常驻追问，无需选中

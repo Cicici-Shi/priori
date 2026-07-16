@@ -282,6 +282,25 @@ main { flex: 1; display: flex; min-height: 0; }
 .transcript.article h2.art-head { font-size: 18px; }
 .transcript.article h3.art-head { font-size: 15.5px; }
 .art-para { margin: 0 0 12px; line-height: 1.85; }
+/* 块级正文：段落/列表/表格/代码整块渲染，保留原排版 */
+.art-block { margin: 0 0 12px; line-height: 1.85; }
+.art-block > :first-child { margin-top: 0; }
+.art-block > :last-child { margin-bottom: 0; }
+.art-block p { margin: 0 0 10px; }
+.art-block ul, .art-block ol { margin: 6px 0 12px; padding-left: 26px; }
+.art-block li { margin: 3px 0; line-height: 1.75; }
+.art-block blockquote { margin: 8px 0; padding: 2px 0 2px 14px; border-left: 3px solid var(--accent-soft); color: var(--text-2); }
+.art-block a { color: var(--accent-ink); text-decoration: underline; text-underline-offset: 2px; }
+.art-block pre { background: var(--accent-soft); border-radius: var(--r-sm); padding: 12px 14px; overflow-x: auto; margin: 10px 0; line-height: 1.55; }
+.art-block pre code { background: none; color: inherit; padding: 0; }
+.art-block table { border-collapse: collapse; margin: 10px 0; font-size: 14px; display: block; overflow-x: auto; }
+.art-block th, .art-block td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; }
+.art-block th { background: var(--accent-soft); font-weight: 700; }
+/* 图片块：可点提问 */
+.art-fig { margin: 14px 0; cursor: zoom-in; }
+.art-fig img { max-width: 100%; height: auto; border-radius: var(--r-sm); display: block; border: 1px solid var(--border); }
+.art-fig:hover img { border-color: var(--accent-ink); }
+.art-fig figcaption { margin-top: 5px; font-size: 12.5px; color: var(--text-3); text-align: center; }
 .transcript code { background: var(--accent-soft); color: var(--accent-ink); padding: 1px 5px; border-radius: 4px; font-size: .9em; }
 .chap-block { scroll-margin-top: 16px; border-radius: var(--r-sm); }
 .chap-block-head {
