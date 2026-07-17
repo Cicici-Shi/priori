@@ -15,10 +15,44 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from typing import Protocol
 
 # 单次问答超时（秒）。说话人识别要对全篇逐段判断、输出很长，可能要几分钟，给足。
 TIMEOUT_S = int(os.environ.get("LLM_TIMEOUT_S", "420"))
+
+# claude 订阅版 headless 基本是单车道：并发 subprocess 会互相拖死（各自重载 ~25k token 上下文、
+# 抢订阅额度），实测 3~4 个并发就全部超时/502。故全局闸门限制同时在跑的 `claude -p`——
+# 无论前端开几个 worker、几个 tab，都在这里排队。默认 1 车道，可用 LLM_MAX_CONCURRENCY 调。
+class _PriorityGate:
+    """单车道闸门 + 优先级。空闲即放行；被占用时，释放瞬间**优先唤醒高优先级等待者**，
+    让翻译（尤其用户正在看的那页字幕）插到 summary/笔记前面。绝不打断在跑的调用——
+    只在下一次放行时插队。high 的放行条件只看有没有空位；low 还得额外等到没有 high 在排队。"""
+
+    def __init__(self, slots: int = 1) -> None:
+        self._cond = threading.Condition()
+        self._free = slots
+        self._hi_waiting = 0  # 正在排队的高优先级数量
+
+    def acquire(self, high: bool = False) -> None:
+        with self._cond:
+            if high:
+                self._hi_waiting += 1
+            try:
+                while not (self._free > 0 and (high or self._hi_waiting == 0)):
+                    self._cond.wait()
+                self._free -= 1
+            finally:
+                if high:
+                    self._hi_waiting -= 1
+
+    def release(self) -> None:
+        with self._cond:
+            self._free += 1
+            self._cond.notify_all()
+
+
+_CLAUDE_GATE = _PriorityGate(int(os.environ.get("LLM_MAX_CONCURRENCY", "1")))
 
 # 默认模型：Sonnet 4.6（质量够、比 Opus 快且省额度）。
 # 可用 CLAUDE_MODEL 覆盖，接受别名（sonnet/opus/haiku）或完整 id（claude-sonnet-4-6 等）。
@@ -50,8 +84,10 @@ class LLMBackend(Protocol):
     name: str
 
     def ask(self, prompt: str, session_id: str | None,
-            images: list[Image] | None = None) -> tuple[str, str]:
-        """返回 (answer, session_id)。session_id 为空表示开新会话。images 非空时随图提问。"""
+            images: list[Image] | None = None,
+            high_priority: bool = False) -> tuple[str, str]:
+        """返回 (answer, session_id)。session_id 为空表示开新会话。images 非空时随图提问。
+        high_priority=True 时在单车道闸门里插队（翻译用，优先于 summary/笔记）。"""
         ...
 
 
@@ -65,7 +101,8 @@ class ClaudeCLIBackend:
         self.model = model or DEFAULT_CLAUDE_MODEL
 
     def ask(self, prompt: str, session_id: str | None,
-            images: list[Image] | None = None) -> tuple[str, str]:
+            images: list[Image] | None = None,
+            high_priority: bool = False) -> tuple[str, str]:
         # 带图：走 stream-json 输入把图当真图喂进去，复用流式路径累积成整段答案。
         if images:
             acc, new_session = [], session_id or ""
@@ -86,6 +123,8 @@ class ClaudeCLIBackend:
             cmd += ["--model", self.model]
         if session_id:
             cmd += ["--resume", session_id]
+        # 全局排队：同一时刻只放行 LLM_MAX_CONCURRENCY 个 claude 进程；high 的能插队到 low 前面
+        _CLAUDE_GATE.acquire(high=high_priority)
         try:
             proc = subprocess.run(
                 cmd,
@@ -95,6 +134,8 @@ class ClaudeCLIBackend:
             )
         except subprocess.TimeoutExpired as e:
             raise LLMError(f"claude 调用超时（>{TIMEOUT_S}s）。") from e
+        finally:
+            _CLAUDE_GATE.release()
 
         if proc.returncode != 0:
             raise LLMError(f"claude 调用失败（exit {proc.returncode}）：{proc.stderr.strip()[:500]}")
@@ -181,7 +222,8 @@ class CodexCLIBackend:
             raise LLMError("找不到 `codex` 命令。安装 Codex CLI 并用 ChatGPT 账号登录后可用。")
 
     def ask(self, prompt: str, session_id: str | None,
-            images: list[Image] | None = None) -> tuple[str, str]:
+            images: list[Image] | None = None,
+            high_priority: bool = False) -> tuple[str, str]:
         if images:
             raise LLMError("codex 引擎暂不支持就图片提问，请切到 claude 引擎。")
         # 预留实现：codex exec [resume <id>] --json。具体字段以装上后的版本为准。

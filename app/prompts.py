@@ -80,7 +80,9 @@ CLEAN_INSTRUCTION = """下面是英文口语转写的若干段落，每段以 [[
 TRANSLATE_INSTRUCTION = """下面是英文转写的若干段落，每段以 [[编号]] 开头。请把每一段**通顺地翻译成简体中文**：
 
 - 忠实原意、口语自然，别逐字硬翻。
-- 人名 / 产品名 / 技术术语可保留英文（如 GPT-4 / Transformer / Stanford）。
+- 人名 / 产品名 / 机构名 / 模型名保留英文（如 GPT-5.6 / Sol / Terra / Luna / Fable 5 / Kimi K3 / Opus 4.8 / Transformer / Stanford / Moonshot）。
+- **LLM / AI 领域的英文术语一律保留英文原词，不要译成中文**：如 benchmark、token、prompt、context、fine-tune、embedding、agent、inference、checkpoint、open weight、RLHF、MoE、reasoning、SOTA 等；即使有常见中译（如 benchmark→基准测试）也保留英文。拿不准是不是通用术语时，倾向保留英文。
+- ⚠️ 源文是自动转写，常把模型名 **Sol**（OpenAI GPT-5.6 的旗舰档，同族还有 Terra / Luna）误拼成 **Soul / soul**。在谈模型或跑分的语境里（尤其紧跟版本号，如「5.6 Soul」「56 soul」），一律按模型名还原成 **Sol**（如 GPT-5.6 Sol），绝不要写成 Soul、更不要译成「灵魂」。
 - 不要解释、不要加注。
 
 **严格 1:1，不许合并**：输入有几段就输出几段，**每个 `[[编号]]` 必须原样出现且各自单独成段**，编号一一对应、不许跳号或改号。即使相邻两段是同一句话被切开的（如引号里的连续问句），也**分别翻译、分别用各自编号输出**，绝不并到一段里。短到只有一两个词也照样单独输出。

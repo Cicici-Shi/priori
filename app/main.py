@@ -537,6 +537,7 @@ class CleanBody(BaseModel):
     paragraphs: list[str]
     backend: str | None = None
     model: str | None = None
+    priority: str | None = None  # "high"：用户正在看的那页字幕，闸门里插到 summary/笔记前
 
 
 def _parse_clean(text: str) -> dict[int, str]:
@@ -577,20 +578,20 @@ def clean(body: CleanBody):
     return {"cleaned": result}
 
 
-def _batch_translate(backend, texts: list[str]) -> list[str]:
+def _batch_translate(backend, texts: list[str], high: bool = False) -> list[str]:
     """整批翻译，返回与 texts 严格 1:1 对齐的译文。
 
     `[[n]]` 编号回填法的致命点：模型把相邻短句合并成一条、再顺移后面的编号，
     解析器信了模型编号就会整体错位一格。故这里校验编号 0..n-1 是否齐全且非空，
     一旦不齐就判定对齐不可信 → 逐句单独重翻（一句一请求，无编号可错）。"""
     numbered = "\n\n".join(f"[[{k}]] {p}" for k, p in enumerate(texts))
-    answer, _ = backend.ask(prompts.TRANSLATE_INSTRUCTION + "\n\n" + numbered, None)
+    answer, _ = backend.ask(prompts.TRANSLATE_INSTRUCTION + "\n\n" + numbered, None, high_priority=high)
     parsed = _parse_clean(answer)
     if all((parsed.get(k) or "").strip() for k in range(len(texts))):
         return [parsed[k].strip() for k in range(len(texts))]
     out = []
     for p in texts:
-        ans, _ = backend.ask(prompts.TRANSLATE_INSTRUCTION + "\n\n[[0]] " + p, None)
+        ans, _ = backend.ask(prompts.TRANSLATE_INSTRUCTION + "\n\n[[0]] " + p, None, high_priority=high)
         one = _parse_clean(ans)
         out.append((one.get(0) or ans or "").strip() or p)
     return out
@@ -610,7 +611,8 @@ def translate(body: CleanBody):
     if todo:
         try:
             backend = llm.get_backend(body.backend, body.model)
-            for p, zh in zip(todo, _batch_translate(backend, todo)):
+            high = body.priority == "high"  # 用户正在看的那页 → 闸门里插到 summary/笔记前
+            for p, zh in zip(todo, _batch_translate(backend, todo, high)):
                 cache[p] = new[p] = zh
         except llm.LLMError as e:
             raise HTTPException(status_code=502, detail=str(e))

@@ -146,6 +146,7 @@ async function ingestFile(file) {
 
 function onIngested(data) {
   state.docId = data.doc_id;
+  LS.set("tq.lastDoc", data.doc_id); // 记住「上次看的视频」，刷新后自动回到它
   state.kind = data.kind || "video";
   // 切换文档时把 URL 输入框同步成当前文档的链接（文件来源没有 URL，则清空避免残留旧链接）
   $("url-input").value = /^https?:\/\//.test(data.source || "") ? data.source : "";
@@ -528,32 +529,106 @@ function segHTML(text, glosses) {
 }
 
 // 段落中文翻译（设置开关，译文挂段下）
-const TRANSLATE_CONCURRENCY = 3;
+// 后端对 claude -p 全局限 1 并发（订阅版单车道），这里也只跑 1 个 worker：一条请求在飞时，
+// 下一批等它回来再按「最新的观看位置」重挑——并发多了只是在后端排队，还拖慢优先级跟随。
+const TRANSLATE_CONCURRENCY = 1;
 const TRANSLATE_BATCH = 12; // 每批句子数：批内连续句给模型留点上下文，又不至于一批太大
 // 翻译单位 = 句子（一个 segment）。句子必落在单个章节内，文本不随章节重新分段而变，
 // 所以译文缓存（按文本做 key）永不失配——彻底避开「章节切分 vs 翻译」并行时的缓存竞态。
+
+// 时间（秒）→ 落在哪一句：取 start ≤ sec 的最后一句
+function segIdxAtTime(sec) {
+  const segs = state.segments;
+  let ans = 0;
+  for (let i = 0; i < segs.length; i++) { if ((segs[i].start || 0) <= sec) ans = i; else break; }
+  return ans;
+}
+// 视口里最上面那句的下标（用户手动滚动看的地方）；没有可见句返回 -1
+function topVisibleSegIdx() {
+  const box = $("transcript");
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  const els = box.querySelectorAll(".seg[data-idx]"); // 文档序 → 第一个进视口的即最上
+  for (const el of els) {
+    const r = el.getBoundingClientRect();
+    if (r.bottom > 0 && r.top < vh) return parseInt(el.dataset.idx, 10);
+  }
+  return -1;
+}
+// 此刻真正在屏幕里的句子原文集合：命中它的翻译批 = 用户正盯着的那页 → 后端里插队优先于 summary
+function visibleSegTexts() {
+  const box = $("transcript");
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  const out = new Set();
+  box.querySelectorAll(".seg[data-idx]").forEach((el) => {
+    const r = el.getBoundingClientRect();
+    if (r.bottom > 0 && r.top < vh) {
+      const s = state.segments[parseInt(el.dataset.idx, 10)];
+      if (s && s.text) out.add(s.text);
+    }
+  });
+  return out;
+}
+// 优先级锚点 = 用户「此刻/上次在看的那句」：正在播 → 播放位置；否则视口顶部；
+// 都没有（刚刷新、暂停）→ 上次记忆的播放位置 tq.pos.<videoId>。绝不写死翻顶部。
+function priorityAnchorIdx() {
+  if (player && playerReady && player.getCurrentTime) {
+    try { const t = player.getCurrentTime(); if (t > 0) return segIdxAtTime(t); } catch (e) {}
+  }
+  const top = topVisibleSegIdx();
+  if (top >= 0) return top;
+  if (state.videoId) { const p = LS.get("tq.pos." + state.videoId); if (p) return segIdxAtTime(parseFloat(p)); }
+  return 0;
+}
+
+let _translating = false;
+// 优先级翻译池：锚点（在看的那句）最高优先，向下（马上要看的）依次排队、看完再回头补上方；
+// 池子容量固定（后端 1 并发），飞行中的请求绝不打断——每批回来才按最新锚点重挑下一批。
 async function ensureTranslated() {
   const docId = state.docId;
+  if (_translating) return; // 已有一轮在跑；它每批都会按最新锚点重挑，观看位置变了会自动跟上
   const backend = $("backend-select").value || undefined;
-  const texts = [...new Set(state.segments.map((s) => s.text).filter((t) => t && !state.translatedMap[t]))];
-  if (!texts.length) { if (state.docId === docId) setStatus("翻译完成 ✓"); return; }
-  const batches = [];
-  for (let i = 0; i < texts.length; i += TRANSLATE_BATCH) batches.push(texts.slice(i, i + TRANSLATE_BATCH));
-  let cursor = 0, done = 0;
+  const anyPending = () => state.segments.some((s) => s.text && !state.translatedMap[s.text]);
+  if (!anyPending()) { if (state.docId === docId) setStatus("翻译完成 ✓"); return; }
+  _translating = true;
+  const inFlight = new Set();   // 正在翻的，避免重复入队
+  const attempted = new Set();  // 本轮已试过的（含失败）：失败不无限重试，重开开关才再来
+  let done = 0;
+  // 按「离锚点的距离」挑下一批：先向下（越近越先），下方翻完再回头补上方
+  function nextBatch() {
+    const A = priorityAnchorIdx();
+    const N = state.segments.length;
+    const items = [];
+    const seen = new Set();
+    state.segments.forEach((s, i) => {
+      const t = s.text;
+      if (!t || state.translatedMap[t] || inFlight.has(t) || attempted.has(t) || seen.has(t)) return;
+      seen.add(t);
+      items.push({ t, key: i >= A ? i - A : N + (A - i) });
+    });
+    items.sort((a, b) => a.key - b.key);
+    return items.slice(0, TRANSLATE_BATCH).map((x) => x.t);
+  }
   async function worker() {
-    while (cursor < batches.length) {
-      const batch = batches[cursor++];
-      if (state.docId !== docId) return;
+    while (state.docId === docId) {
+      const batch = nextBatch();
+      if (!batch.length) return;
+      batch.forEach((t) => { inFlight.add(t); attempted.add(t); });
       done++;
-      setStatus(`翻译中… ${done}/${batches.length} 批`, "loading");
+      setStatus(`翻译中… 已发 ${done} 批`, "loading");
+      // 这批里有正盯着的句子 → 高优先，插到 summary/笔记前；纯后台补远处的 → 普通，和 summary 轮流
+      const visible = visibleSegTexts();
+      const priority = batch.some((t) => visible.has(t)) ? "high" : undefined;
       try {
-        const data = await postJSON("/api/translate", { doc_id: docId, backend, paragraphs: batch });
+        const data = await postJSON("/api/translate", { doc_id: docId, backend, paragraphs: batch, priority });
         (data.translated || []).forEach((t, k) => { state.translatedMap[batch[k]] = t; });
-        if (state.translateMode) updateTranslations();
+        if (state.translateMode) updateTranslations(); // 出一点显示一点
       } catch (e) { /* 失败留空，可重开开关重试 */ }
+      finally { batch.forEach((t) => inFlight.delete(t)); }
     }
   }
-  await Promise.all(Array.from({ length: TRANSLATE_CONCURRENCY }, () => worker()));
+  try {
+    await Promise.all(Array.from({ length: TRANSLATE_CONCURRENCY }, () => worker()));
+  } finally { _translating = false; }
   if (state.docId === docId) setStatus("翻译完成 ✓");
 }
 
@@ -1506,9 +1581,9 @@ $("video-resize").addEventListener("mousedown", (e) => {
 
 loadHistory(); // 启动即拉一次历史列表
 
-// 调试期：写死常用视频，刷新即自动载入（走缓存秒开）。调完删掉这一段。
-const DEBUG_URL = "https://www.youtube.com/watch?v=iJVJwmCKW9o";
-if (DEBUG_URL) {
-  $("url-input").value = DEBUG_URL;
-  ingestUrl();
-}
+// 刷新后自动回到「上次看的视频」：载入上次打开的 doc（走缓存秒开），视频内的时间点由
+// restorePos() 按 tq.pos.<videoId> 恢复。没有历史（首次使用）则留空，等用户导入。
+(function restoreLastDoc() {
+  const last = LS.get("tq.lastDoc");
+  if (last) loadDocById(last);
+})();
