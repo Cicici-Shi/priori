@@ -1,40 +1,40 @@
 #!/bin/bash
-# 双击启动 Priori —— 已在跑就直接开浏览器，没跑就起服务再开。
-# 关掉这个终端窗口 = 关掉服务。
-# 无写死路径：项目目录 = 本脚本所在目录；uv 从 PATH 查找。
+# Double-click to start Priori. If it's already running, just open the browser;
+# otherwise start the server and then open it. Closing this Terminal window stops the server.
+# No hardcoded paths: the project dir is this script's own folder; uv is found on PATH.
 
 PORT=8000
 URL="http://localhost:${PORT}"
 
-# 本脚本所在目录（即项目根），双击时也能正确定位
+# This script's directory (the project root) — resolved even when double-clicked
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-cd "$DIR" || { echo "找不到项目目录 $DIR"; exit 1; }
+cd "$DIR" || { echo "Project directory not found: $DIR"; exit 1; }
 
-# 找 uv（PATH 里没有就试常见安装位置）
+# Locate uv (fall back to the common install location if it's not on PATH)
 UV="$(command -v uv || true)"
 [ -z "$UV" ] && [ -x "$HOME/.local/bin/uv" ] && UV="$HOME/.local/bin/uv"
-[ -z "$UV" ] && { echo "找不到 uv，请先安装：https://docs.astral.sh/uv/"; exit 1; }
+[ -z "$UV" ] && { echo "uv not found. Install it first: https://docs.astral.sh/uv/"; exit 1; }
 
-# 已经在跑？直接开浏览器，不再起第二份。
+# Already running? Just open the browser, don't start a second instance.
 if curl -s -o /dev/null "$URL"; then
-  echo "Priori 已在运行，打开浏览器…"
+  echo "Priori is already running, opening the browser…"
   open "$URL"
   exit 0
 fi
 
-echo "启动 Priori… (关闭本窗口即停止服务)"
+echo "Starting Priori… (closing this window stops the server)"
 "$UV" run uvicorn app.main:app --port "$PORT" &
 SERVER_PID=$!
 
-# 等端口就绪（最多 ~30s）再开浏览器
+# Wait for the port to come up (up to ~30s), then open the browser
 for i in $(seq 1 60); do
   if curl -s -o /dev/null "$URL"; then
-    echo "就绪，打开浏览器 → $URL"
+    echo "Ready, opening → $URL"
     open "$URL"
     break
   fi
   sleep 0.5
 done
 
-# 前台等着服务进程，让终端窗口保持打开；关窗口就停服务
+# Stay attached to the server process so the window stays open; closing it stops the server
 wait $SERVER_PID
