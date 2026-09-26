@@ -285,7 +285,7 @@ async function runFixterms() {
   const docId = state.docId;
   setStatus("纠正专有名词中…（每 300 句约 1 分钟）", "loading");
   try {
-    const job = await postJSON("/api/fixterms", { doc_id: docId, backend: $("backend-select").value || undefined });
+    const job = await postJSON("/api/fixterms", { doc_id: docId }); // 纠错模型由后端 FIXTERMS_BACKEND 决定，不跟问答引擎走
     const doc = await waitIngestJob(job.job_id); // 进度（纠正专有名词… 3/12）显示在状态栏
     if (state.docId !== docId) return; // 等待期间切了文档
     onIngested(doc); // 整篇重载：旧章节 / 笔记已作废，按纠正后的原文重新生成

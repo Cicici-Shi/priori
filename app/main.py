@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -110,6 +111,9 @@ def _save_podcast(key: str, url: str, segments: list, turns: list, meta: dict, p
 # 一批 300 句会撞 420s 超时。所以切小批、4 路并行，882 句约 5–6 分钟。
 _FIX_CHUNK = 80
 _FIX_PARALLEL = int(os.environ.get("FIXTERMS_PARALLEL", "4"))
+# 纠错用哪个模型：默认 agy（Gemini 3.8 Flash medium，比 Sonnet 快一倍、效果相当），没装 agy 退回 claude
+_FIX_BACKEND = os.environ.get("FIXTERMS_BACKEND") or ("agy" if shutil.which("agy") or os.path.exists(
+    os.path.expanduser("~/.local/bin/agy")) else "claude")
 
 
 def _fix_span(old: str, new: str) -> tuple[int, int, str] | None:
@@ -162,13 +166,22 @@ def _fix_terms(doc_id: str, backend_name: str | None = None, progress=lambda _m:
         if "orig" in sg:
             sg["text"] = sg.pop("orig")
             sg.pop("fix", None)
-    backend = llm.get_backend(backend_name)
+    backend = llm.get_backend(backend_name or _FIX_BACKEND)
     title, notes = doc.get("title") or "", doc.get("shownotes") or ""
     batches = [(a, min(a + _FIX_CHUNK, len(segs)) - 1) for a in range(0, len(segs), _FIX_CHUNK)]
 
+    fallback = llm.get_backend("claude") if backend.name != "claude" else None
+
     def run(batch: tuple[int, int]) -> tuple[int, int, str]:
         a, b = batch  # gate=False：自己控并发，不占问答/笔记的单车道
-        return a, b, backend.ask(prompts.fixterms_prompt(title, notes, segs, a, b), None, gate=False)[0]
+        prompt = prompts.fixterms_prompt(title, notes, segs, a, b)
+        try:
+            return a, b, backend.ask(prompt, None, gate=False)[0]
+        except llm.LLMError:
+            if fallback is None:
+                raise
+            # agy 额度用完（429 RESOURCE_EXHAUSTED，要等几天才恢复）或其他失败：这一批改用 Claude
+            return a, b, fallback.ask(prompt, None, gate=False)[0]
 
     answers, failed = [], 0
     progress(f"纠正专有名词… 0/{len(batches)}")

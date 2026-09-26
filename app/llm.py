@@ -4,6 +4,7 @@
 - ClaudeCLIBackend：`claude -p ... --output-format json`，走 Claude Pro 订阅，零 API 花费。
   多轮靠 `--resume <session_id>` 续接同一会话（transcript 只在首轮喂一次）。
 - CodexCLIBackend：预留（本机未装 codex），`codex exec` / `codex exec resume`。
+- AgyCLIBackend：`agy -p`（Gemini），无状态，只用于纠错这类批处理（见 FIXTERMS_BACKEND）。
 
 选择由环境变量 LLM_BACKEND 决定，默认 claude。
 """
@@ -259,14 +260,60 @@ class CodexCLIBackend:
         return answer, sess
 
 
-_BACKENDS = {"claude": ClaudeCLIBackend, "codex": CodexCLIBackend}
+class AgyCLIBackend:
+    """Google Antigravity CLI（`agy -p`）：跑 Gemini。只做无状态的一次性调用（纠错这类批处理）。
+
+    实测同一批 80 句专有名词纠错：Gemini 3.8 Flash (medium) 51s，Sonnet 4.6 104s，效果相当。
+    agy 是会读文件、跑命令的 agent：放到空的临时目录里跑，headless 下工具权限会被自动拒绝，
+    纯文本任务不受影响。"""
+
+    name = "agy"
+    # 额度用完（429 RESOURCE_EXHAUSTED）时 agy 要卡 ~150s 才报错、且几天后才恢复：
+    # 记住这个状态，本进程后续调用立即失败，让调用方直接走降级，别每批都白等。
+    _exhausted_until = 0.0
+
+    def __init__(self, model: str | None = None) -> None:
+        self.bin = shutil.which("agy") or next(
+            (str(p) for p in [os.path.expanduser("~/.local/bin/agy")] if os.path.exists(p)), None)
+        if not self.bin:
+            raise LLMError("找不到 `agy` 命令（Google Antigravity CLI）。")
+        self.model = model or os.environ.get("AGY_MODEL", "gemini-3.8-flash-medium")
+
+    def ask(self, prompt: str, session_id: str | None,
+            images: list[Image] | None = None,
+            high_priority: bool = False, gate: bool = True) -> tuple[str, str]:
+        if images:
+            raise LLMError("agy 引擎暂不支持就图片提问。")
+        import tempfile
+        import time
+
+        if time.time() < AgyCLIBackend._exhausted_until:
+            raise LLMError("agy 额度已用完（稍后自动恢复）。")
+
+        with tempfile.TemporaryDirectory(prefix="priori-agy-") as cwd:
+            try:
+                proc = subprocess.run(
+                    [self.bin, "-p", prompt, "--model", self.model, "--output-format", "text",
+                     "--print-timeout", f"{TIMEOUT_S}s"],
+                    capture_output=True, text=True, timeout=TIMEOUT_S + 30, cwd=cwd)
+            except subprocess.TimeoutExpired as e:
+                raise LLMError(f"agy 调用超时（>{TIMEOUT_S}s）。") from e
+        if proc.returncode != 0 or not proc.stdout.strip():
+            err = (proc.stderr or proc.stdout).strip()
+            if "RESOURCE_EXHAUSTED" in err or "quota reached" in err:
+                AgyCLIBackend._exhausted_until = time.time() + 3600  # 一小时内不再尝试
+            raise LLMError(f"agy 调用失败：{err[:500]}")
+        return proc.stdout.strip(), ""
+
+
+_BACKENDS = {"claude": ClaudeCLIBackend, "codex": CodexCLIBackend, "agy": AgyCLIBackend}
 
 
 def get_backend(name: str | None = None, model: str | None = None) -> LLMBackend:
     name = (name or os.environ.get("LLM_BACKEND") or "claude").lower()
     cls = _BACKENDS.get(name)
     if cls is None:
-        raise LLMError(f"未知 LLM_BACKEND: {name}（可选 claude / codex）。")
-    if name == "claude":
+        raise LLMError(f"未知 LLM_BACKEND: {name}（可选 claude / codex / agy）。")
+    if name in ("claude", "agy"):
         return cls(model=model)
     return cls()

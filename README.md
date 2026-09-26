@@ -66,6 +66,8 @@ uv sync --extra whisper
 | `LLM_TIMEOUT_S` | 单次调用超时（秒） | `420` |
 | `QIANWEN_LANG` | 播客转写语言：`中文` / `英语` / `日语` / `粤语` / `中英文自由说` | `中英文自由说` |
 | `QIANWEN_SPEAKERS` | 播客说话人：`暂不体验` / `单人演讲` / `2人对话` / `多人讨论` | `多人讨论` |
+| `FIXTERMS_BACKEND` | 专有名词纠错用的模型：`agy`（Gemini，通过 Antigravity CLI）/ `claude`；agy 失败或额度用完时自动退回 Claude | 装了 `agy` 就用 `agy` |
+| `AGY_MODEL` | `agy` 使用的模型 | `gemini-3.8-flash-medium` |
 | `FIXTERMS_PARALLEL` | 专有名词纠错的并发批数（每批 80 句） | `4` |
 | `PRIORI_DOWNLOADS` | 浏览器下载目录（千问导出的文字稿落在这里，读完即删） | `~/Downloads` |
 
@@ -78,7 +80,7 @@ uv sync --extra whisper
 
 - 需要：WebBridge 已启动、浏览器已登录 qianwen.com、`ffmpeg`（可选，用来压缩；没有就传原文件）。
 - 说话人用段落左侧的细色线区分，颜色对照正文上方的 `# speakers:` 图例，点名字可改名。
-- 转写完会自动做一轮**专有名词纠错**：把节目 shownotes 和 `app/prompts.py` 里的 `KNOWN_TERMS` 当术语表，让 Claude 修正听错的名字（Opus 被听成 oppo 之类），只做局部换词、不改写。完成后正文上方显示 `# fixed: N terms`；旧文档可点 `[fix terms]` 补跑。
+- 转写完会自动做一轮**专有名词纠错**：把节目 shownotes 和 `app/prompts.py` 里的 `KNOWN_TERMS` 当术语表，让模型（默认 Gemini，退回 Claude）修正听错的名字（Opus 被听成 oppo 之类），也会按上下文语义推断讲不通的名字，只做局部换词、不改写。完成后正文上方显示 `# fixed: N terms`；旧文档可点 `[fix terms]` 补跑。
 - 中文与英文 / 数字之间自动加空格。
 
 ## 结构 · Layout

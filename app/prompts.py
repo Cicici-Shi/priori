@@ -84,7 +84,12 @@ FIXTERMS_INSTRUCTION = """下面是一期中文播客的语音转写（每行：
 请修正这两类「听错」的地方。依据：
 1. 下面给出的节目标题和 shownotes（里面的写法是正确的，优先照它来）；
 2. 上下文（前后句在聊什么）和你自己的常识。
-普通词只在**有把握**时改（shownotes 里有原词，或上下文明显说不通而同音词说得通）；拿不准就别改。
+3. **语义推理**：一个词放在句子里讲不通、而上下文明显在说某个产品 / 公司 / 品牌时，它多半是听错的名字——
+   根据上下文推断它指的是什么，用你的常识还原成真实名字。例如「我平时用那个 no shun 记笔记」讲不通，
+   上下文在说笔记软件、发音接近 → Notion。
+⚠️ 你的知识有截止日期，节目聊的常常是你不知道的新产品：**不要把你不认识的新名字改成你认识的旧名字**
+   （例如节目说「iPhone 18」，别因为你只知道 iPhone 16 就改成 iOS 18 或 iPhone 16）。推断不出确切名字时，宁可不改。
+普通词只在**有把握**时改（shownotes 里有原词，或上下文明显说不通而同音词说得通）；拿不准的普通词就别改。
 
 **硬规则**：
 - 只替换听错的那个词，句子其余部分一个字都不许动：不改措辞、不改标点、不删口头禅和重复、不润色。
@@ -99,6 +104,7 @@ FIXTERMS_INSTRUCTION = """下面是一期中文播客的语音转写（每行：
 KNOWN_TERMS = """- OpenAI 模型档位：Sol、Terra、Luna（常见误听：Sol → 瘦 / Soul / 所；Luna → 露娜），如「GPT 6 的 Sol 和 Luna」
 - OpenAI：GPT 6 Astra、Codex、ChatGPT
 - Anthropic：Claude、Opus、Sonnet、Haiku、Fable、Claude Code
+- Apple：iPhone 18、iPhone Duo、Apple Intelligence
 - 其他模型 / 产品：Jev、Gemini、DeepSeek、Kimi、GLM、Qwen、Meta Muse、Grok"""
 
 
