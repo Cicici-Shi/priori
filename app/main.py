@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -13,7 +14,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ingest, llm, prompts, store
+from . import ingest, llm, podcast, prompts, store
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -42,8 +43,11 @@ def _doc_response(doc_id: str, doc: dict) -> dict:
         "doc_id": doc_id,
         "title": doc.get("title"),
         "source": doc.get("source"),  # 原始链接/文件名，前端切文档时回填 URL 输入框
-        "kind": doc.get("kind", "video"),  # video | web
+        "kind": doc.get("kind", "video"),  # video | web | audio
         "video_id": ingest.extract_video_id(doc.get("source") or ""),  # YouTube 源才有，用于嵌入播放器
+        "audio_url": doc.get("audio_url"),  # 播客源才有：前端用 <audio> 播放并联动字幕
+        "speakers_source": doc.get("speakers_source"),  # "asr" = 千问声学分离的说话人，可直接展示
+        "fixterms": doc.get("fixterms"),  # 专有名词纠错改了几句；None = 没跑过（前端显示补跑按钮）
         "segments": doc["segments"],
         "chapters": doc.get("chapters", []),
         "turns": doc.get("turns", []),
@@ -64,6 +68,12 @@ def ingest_url(body: IngestUrl):
     if existing_id and (doc := store.load(existing_id)):
         return _doc_response(existing_id, doc)
 
+    if not vid and podcast.is_podcast_url(body.url):
+        # 播客：下载 → 千问转写要十几分钟，起后台任务，前端轮询 /api/ingest/job/{id}
+        job = podcast.job_for_key(key) or podcast.start_job(
+            body.url.strip(), key, lambda segs, turns, meta, prog: _save_podcast(key, body.url.strip(), segs, turns, meta, prog))
+        return {"job_id": job["id"], "message": job["message"]}
+
     try:
         if vid:
             segments, title = ingest.from_youtube(body.url)
@@ -82,6 +92,159 @@ def ingest_url(body: IngestUrl):
     store.update(doc_id, kind="video" if vid else "web", **({"chapters": chapters} if chapters else {}))
     doc = store.load(doc_id)
     return _doc_response(doc_id, doc)
+
+
+def _save_podcast(key: str, url: str, segments: list, turns: list, meta: dict, progress) -> str:
+    doc_id, _ = store.create_keyed(key, segments, source=url, title=meta["title"])
+    store.update(doc_id, kind="audio", audio_url=meta["audio_url"], qianwen_url=meta["qianwen_url"],
+                 shownotes=meta["shownotes"], turns=turns, speakers=_speakers_list(turns),
+                 speakers_source="asr")
+    try:  # 纠错失败不影响导入：原始转写照样可读
+        _fix_terms(doc_id, progress=progress)
+    except (llm.LLMError, HTTPException) as e:
+        progress(f"专有名词纠错失败（已保留原始转写）：{e}")
+    return doc_id
+
+
+# 句/批 与 并发：实测 Sonnet 每 80 句约 100s（输出只有几行，时间花在逐句核对上），
+# 一批 300 句会撞 420s 超时。所以切小批、4 路并行，882 句约 5–6 分钟。
+_FIX_CHUNK = 80
+_FIX_PARALLEL = int(os.environ.get("FIXTERMS_PARALLEL", "4"))
+
+
+def _fix_span(old: str, new: str) -> tuple[int, int, str] | None:
+    """old→new 的改动区间：公共前后缀之外的部分。返回 (新句中起, 止, 原片段)。"""
+    a = 0
+    while a < min(len(old), len(new)) and old[a] == new[a]:
+        a += 1
+    b = 0
+    while b < min(len(old), len(new)) - a and old[-1 - b] == new[-1 - b]:
+        b += 1
+    if a == len(new) - b and a == len(old) - b:
+        return None
+    word = lambda c: c.isascii() and c.isalnum()  # noqa: E731
+    while a > 0 and word(new[a - 1]):  # 扩到英文单词边界：Opera→Opus 标整个词，不只标 "us"
+        a -= 1
+    while b > 0 and word(new[len(new) - b]):
+        b -= 1
+    return a, len(new) - b, old[a:len(old) - b]
+
+
+def _plausible_fix(old: str, new: str, span: tuple[int, int, str]) -> bool:
+    """像「局部换词」才信；像改写 / 删内容就丢弃。
+
+    - 整句相似度 ≥ 0.6，新旧改动片段都 ≤ 40 字；
+    - 整句最多短 2 个字：换词（风→枫、异性→eSIM、german奶→Gemini）长度相近，
+      模型顺手删掉「随身跟着你，」「好，最后来一条…」这类原话时句子会明显变短。"""
+    import difflib
+
+    a, b, orig_frag = span
+    if difflib.SequenceMatcher(None, old, new).ratio() < 0.6 or b - a > 40 or len(orig_frag) > 40:
+        return False
+    return len(old) - len(new) <= 2
+
+
+def _fix_terms(doc_id: str, backend_name: str | None = None, progress=lambda _m: None) -> int:
+    """ASR 专有名词纠错（Opus 被听成 oppo 之类）：shownotes 当术语表，让模型只输出要改的句子。
+
+    防改写：改动必须是「局部替换」——前后缀大部分不变、改动片段短；否则丢弃。
+    改过的句子记下 orig（原识别）与 fix（新句里的改动区间），前端据此标注、悬停可看原文。
+    返回改动句数。"""
+    import difflib
+
+    doc = store.load(doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文档不存在，请重新导入。")
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    segs = doc["segments"]
+    for sg in segs:  # 重跑：先还原成原识别，结果只反映这一轮（否则上一轮的改动残留、计数对不上）
+        if "orig" in sg:
+            sg["text"] = sg.pop("orig")
+            sg.pop("fix", None)
+    backend = llm.get_backend(backend_name)
+    title, notes = doc.get("title") or "", doc.get("shownotes") or ""
+    batches = [(a, min(a + _FIX_CHUNK, len(segs)) - 1) for a in range(0, len(segs), _FIX_CHUNK)]
+
+    def run(batch: tuple[int, int]) -> tuple[int, int, str]:
+        a, b = batch  # gate=False：自己控并发，不占问答/笔记的单车道
+        return a, b, backend.ask(prompts.fixterms_prompt(title, notes, segs, a, b), None, gate=False)[0]
+
+    answers, failed = [], 0
+    progress(f"纠正专有名词… 0/{len(batches)}")
+    with ThreadPoolExecutor(_FIX_PARALLEL) as pool:
+        for fut in as_completed([pool.submit(run, bt) for bt in batches]):
+            try:
+                answers.append(fut.result())
+            except llm.LLMError:
+                failed += 1  # 某批超时/失败：跳过，其余批照常生效（但要在进度里说出来）
+            progress(f"纠正专有名词… {len(answers) + failed}/{len(batches)}"
+                     + (f"（{failed} 批失败已跳过）" if failed else ""))
+    if failed == len(batches):
+        raise llm.LLMError("专有名词纠错的每一批都失败了。")
+
+    changed = 0
+    for start, end, answer in answers:
+        for line in answer.splitlines():
+            m = re.match(r"^\s*(\d+)\s*[|｜]\s*(.+?)\s*$", line)
+            if not m or not (start <= (i := int(m.group(1))) <= end):
+                continue
+            old = segs[i]["text"]
+            new = podcast.pangu(m.group(2))  # 与原文同一套空格规则，改动区间才对得上
+            span = _fix_span(old, new)
+            if span is None:
+                continue
+            if not _plausible_fix(old, new, span):
+                continue
+            segs[i].update(text=new, orig=old, fix=[span[0], span[1], span[2]])
+            changed += 1
+    derived = {}
+    if changed and doc.get("chapters"):
+        # 章节标题 / 笔记 / 生词都是照旧原文写的（会出现「Jeff/Java 模型」），会话里也塞着旧原文：
+        # 一并作废，前端重新加载时按纠正后的原文重新生成。说话人轮次来自声学分离，与文字无关，保留。
+        derived = {"chapters": [], "session_id": None, "cleaned_map": {}, "translated_map": {}}
+    store.update(doc_id, segments=segs, fixterms=changed, **derived)  # 记改动数；None = 还没跑过
+    progress(f"纠错完成，改了 {changed} 句" +
+             (f"；{failed}/{len(batches)} 批失败已跳过，可点 [fix terms] 重跑" if failed else ""))
+    return changed
+
+
+class FixTermsBody(BaseModel):
+    doc_id: str
+    backend: str | None = None
+
+
+@app.post("/api/fixterms")
+def fixterms(body: FixTermsBody):
+    """对已导入的文档（重新）跑专有名词纠错。几分钟的活 → 后台任务，前端轮询 /api/ingest/job/{id}。"""
+    if store.load(body.doc_id) is None:
+        raise HTTPException(status_code=404, detail="文档不存在，请重新导入。")
+    key = "fixterms:" + body.doc_id
+
+    def work(progress) -> str:
+        try:
+            _fix_terms(body.doc_id, body.backend, progress=progress)
+        except llm.LLMError as e:
+            raise ingest.IngestError(f"纠错失败：{e}") from e
+        return body.doc_id
+
+    job = podcast.job_for_key(key) or podcast.start_task(key, work, "纠错")
+    return {"job_id": job["id"], "message": job["message"]}
+
+
+@app.get("/api/ingest/job/{job_id}")
+async def ingest_job(job_id: str):
+    """播客导入 / 纠错任务进度。完成后直接带上 doc，前端无需再请求一次。
+
+    async：同步接口跑在 40 线程的线程池里，笔记 / 生词等 LLM 请求排队时会把池子占满，
+    轮询就拿不到线程、进度卡死。这里只读内存 + 读一次 JSON，放事件循环上跑。"""
+    job = podcast.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在（服务重启过？请重新导入）。")
+    out = {"status": job["status"], "message": job["message"], "error": job["error"]}
+    if job["status"] == "done" and (doc := store.load(job["doc_id"])):
+        out["doc"] = _doc_response(job["doc_id"], doc)
+    return out
 
 
 @app.post("/api/ingest/file")
@@ -110,7 +273,7 @@ async def ingest_file(file: UploadFile = File(...)):
 
 
 @app.get("/api/docs")
-def docs_list():
+async def docs_list():  # async 同上：别被排队中的 LLM 请求饿死
     """历史记录：最近打开/活跃的文档元信息列表（不含正文）。"""
     return {"docs": store.list_docs()}
 

@@ -50,7 +50,7 @@ uv sync --extra whisper
 
 ## 用法 · Usage
 
-1. 左上角 **`[cfg]`** 里粘贴 **YouTube / 视频链接**，或上传 `.srt / .vtt / .txt` 及音视频文件。
+1. 左上角 **`[cfg]`** 里粘贴 **YouTube / 视频链接**、**播客链接**（小宇宙单集 / Apple Podcasts 单集 / 音频直链），或上传 `.srt / .vtt / .txt` 及音视频文件。
 2. 自动生成**章节笔记**（左栏）。播放时字幕高亮跟随、笔记同步定位。
 3. 在字幕里**选中一段 → 回车**：AI 直接讲解（含生词、术语、背景）。也可在右侧对话框继续追问。
 4. **`[cfg]`** 里可开**隐藏视频 / 逐句双语对照 / 整段翻译**；正文里生词自带下划线 + 中文。
@@ -64,9 +64,22 @@ uv sync --extra whisper
 | `LLM_BACKEND` | 问答引擎：`claude` / `codex` | `claude` |
 | `CLAUDE_MODEL` | claude 引擎用的模型（接受 `sonnet`/`opus`/`haiku` 别名或完整 id） | `claude-sonnet-4-6` |
 | `LLM_TIMEOUT_S` | 单次调用超时（秒） | `420` |
+| `QIANWEN_LANG` | 播客转写语言：`中文` / `英语` / `日语` / `粤语` / `中英文自由说` | `中英文自由说` |
+| `QIANWEN_SPEAKERS` | 播客说话人：`暂不体验` / `单人演讲` / `2人对话` / `多人讨论` | `多人讨论` |
+| `FIXTERMS_PARALLEL` | 专有名词纠错的并发批数（每批 80 句） | `4` |
+| `PRIORI_DOWNLOADS` | 浏览器下载目录（千问导出的文字稿落在这里，读完即删） | `~/Downloads` |
 
 - **claude**：`claude -p ... --output-format json`，走 Claude 订阅；多轮用 `--resume` 续接，整篇 transcript 只在首轮喂一次。
 - **codex**：预留实现，装好 Codex CLI 并登录后 `LLM_BACKEND=codex` 即可。
+
+### 播客转写 · Podcasts
+
+播客走[千问「音视频速读」](https://www.qianwen.com/discover/audioread)转写：中文效果好、**按声音区分说话人**、在云端跑本机不发烫、免费。它没有公开 API，所以和 X 长文一样，由 Kimi WebBridge 驱动你**已登录千问**的浏览器完成：下载音频 → 压成 48kbps 单声道 → 上传 → 等转写（1.5 小时的节目约 5–10 分钟）→ 导出原文 → 入库。进度实时显示在状态栏；首次使用若没登录千问，会提示你在浏览器里扫码。
+
+- 需要：WebBridge 已启动、浏览器已登录 qianwen.com、`ffmpeg`（可选，用来压缩；没有就传原文件）。
+- 说话人用段落左侧的细色线区分，颜色对照正文上方的 `# speakers:` 图例，点名字可改名。
+- 转写完会自动做一轮**专有名词纠错**：把节目 shownotes 和 `app/prompts.py` 里的 `KNOWN_TERMS` 当术语表，让 Claude 修正听错的名字（Opus 被听成 oppo 之类），只做局部换词、不改写。完成后正文上方显示 `# fixed: N terms`；旧文档可点 `[fix terms]` 补跑。
+- 中文与英文 / 数字之间自动加空格。
 
 ## 结构 · Layout
 
@@ -75,6 +88,7 @@ app/        FastAPI 后端
   main.py     /api/ingest、/summary(章节)、/notes(笔记)、/glossary(生词)、
               /translate、/ask·/ask/stream(问答)、/session/new
   ingest.py   YouTube 字幕 / 音视频(faster-whisper) / srt·vtt·txt → 统一 segments
+  podcast.py  播客链接 → 音频 → 千问转写（WebBridge 驱动浏览器）→ 带说话人的 segments
   llm.py      可插拔 LLM 后端（subprocess 调订阅 CLI）
   prompts.py  中文讲解 / 笔记 / 生词 / 翻译 提示
   store.py    每个 doc 一个 JSON（transcript + 章节 + 缓存 + 会话）

@@ -217,19 +217,22 @@ def _x_article_meta(status_id: str) -> tuple[str | None, str | None]:
     return art.get("title"), cover
 
 
-def _webbridge(action: str, args: dict | None = None, timeout: int = 60) -> dict:
-    """调本地 Kimi WebBridge daemon。连不上/报错 → 抛可读的 IngestError。"""
+def _webbridge(action: str, args: dict | None = None, timeout: int = 60, session: str = "priori") -> dict:
+    """调本地 Kimi WebBridge daemon。连不上/报错 → 抛可读的 IngestError。
+
+    session 区分用途（X 长文 / 千问播客转写各用各的 tab，互不干扰）。
+    """
     import requests
 
-    session = requests.Session()
-    session.trust_env = False  # localhost 别走系统代理（whistle 等会劫持）
+    http = requests.Session()
+    http.trust_env = False  # localhost 别走系统代理（whistle 等会劫持）
     try:
-        r = session.post(_WEBBRIDGE, json={"action": action, "args": args or {}, "session": "priori"},
-                         timeout=timeout)
+        r = http.post(_WEBBRIDGE, json={"action": action, "args": args or {}, "session": session},
+                      timeout=timeout)
     except requests.exceptions.ConnectionError as e:
         raise IngestError(
-            "连不上 Kimi WebBridge（127.0.0.1:10086）。X 长文要通过你已登录的浏览器抓，"
-            "请先启动：`~/.kimi-webbridge/bin/kimi-webbridge start`，并确认浏览器已登录 X。"
+            "连不上 Kimi WebBridge（127.0.0.1:10086）。X 长文和播客转写都要通过你已登录的浏览器，"
+            "请先启动：`~/.kimi-webbridge/bin/kimi-webbridge start`。"
         ) from e
     except Exception as e:  # noqa: BLE001  超时等
         raise IngestError(f"调用 Kimi WebBridge 失败：{e}") from e

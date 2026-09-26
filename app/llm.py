@@ -85,9 +85,10 @@ class LLMBackend(Protocol):
 
     def ask(self, prompt: str, session_id: str | None,
             images: list[Image] | None = None,
-            high_priority: bool = False) -> tuple[str, str]:
+            high_priority: bool = False, gate: bool = True) -> tuple[str, str]:
         """返回 (answer, session_id)。session_id 为空表示开新会话。images 非空时随图提问。
-        high_priority=True 时在单车道闸门里插队（翻译用，优先于 summary/笔记）。"""
+        high_priority=True 时在单车道闸门里插队（翻译用，优先于 summary/笔记）。
+        gate=False 绕过闸门：调用方自己控制并发（导入阶段的批处理，如播客专有名词纠错）。"""
         ...
 
 
@@ -102,7 +103,7 @@ class ClaudeCLIBackend:
 
     def ask(self, prompt: str, session_id: str | None,
             images: list[Image] | None = None,
-            high_priority: bool = False) -> tuple[str, str]:
+            high_priority: bool = False, gate: bool = True) -> tuple[str, str]:
         # 带图：走 stream-json 输入把图当真图喂进去，复用流式路径累积成整段答案。
         if images:
             acc, new_session = [], session_id or ""
@@ -124,7 +125,8 @@ class ClaudeCLIBackend:
         if session_id:
             cmd += ["--resume", session_id]
         # 全局排队：同一时刻只放行 LLM_MAX_CONCURRENCY 个 claude 进程；high 的能插队到 low 前面
-        _CLAUDE_GATE.acquire(high=high_priority)
+        if gate:
+            _CLAUDE_GATE.acquire(high=high_priority)
         try:
             proc = subprocess.run(
                 cmd,
@@ -135,7 +137,8 @@ class ClaudeCLIBackend:
         except subprocess.TimeoutExpired as e:
             raise LLMError(f"claude 调用超时（>{TIMEOUT_S}s）。") from e
         finally:
-            _CLAUDE_GATE.release()
+            if gate:
+                _CLAUDE_GATE.release()
 
         if proc.returncode != 0:
             raise LLMError(f"claude 调用失败（exit {proc.returncode}）：{proc.stderr.strip()[:500]}")
@@ -223,7 +226,7 @@ class CodexCLIBackend:
 
     def ask(self, prompt: str, session_id: str | None,
             images: list[Image] | None = None,
-            high_priority: bool = False) -> tuple[str, str]:
+            high_priority: bool = False, gate: bool = True) -> tuple[str, str]:
         if images:
             raise LLMError("codex 引擎暂不支持就图片提问，请切到 claude 引擎。")
         # 预留实现：codex exec [resume <id>] --json。具体字段以装上后的版本为准。

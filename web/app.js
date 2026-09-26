@@ -1,13 +1,15 @@
 // 状态
 const state = {
   docId: null,
-  kind: "video",      // video | web（网页正文阅读）
+  kind: "video",      // video | web（网页正文阅读）| audio（播客）
   segments: [],
   chapters: [],
   turns: [],          // [{start,end,speaker}]
   segSpeaker: [],     // segIdx -> 原始说话人标签
   speakerOrder: [],   // 去重说话人，按出现顺序（决定配色）
   speakerNames: {},   // 原始标签 -> 用户改的显示名
+  asrSpeakers: false, // 说话人来自千问声学分离（可靠，直接展示；不提供「重新识别」）
+  fixterms: null,     // 专有名词纠错改了几句；null = 还没跑过
   cleanMode: false,   // 阅读模式：AI 清洗口水词
   paragraphs: [],     // [{ci,a,b,startSec,raw}] 规则分好的段落
   cleanedMap: {},     // 原始段落文本 -> AI 清洗后文本
@@ -23,12 +25,14 @@ const state = {
 
 // 说话人识别暂关（文本猜测不可靠，等声学分离）
 const SPEAKERS_ENABLED = false;
+const speakersOn = () => SPEAKERS_ENABLED || state.asrSpeakers;
 
 // 规则分段参数（纯靠时间戳 + 标点，零 AI 猜测）
 const PARA_OPTS = { maxSec: 30, maxChars: 300, gapSec: 1.4, hardSec: 55, hardGap: 2.5 }; // 正常段落
 const SUB_OPTS = { maxSec: 0, maxChars: 220, gapSec: 0, hardSec: 0, hardGap: 1.6 };      // 逐句：每个句末就断，整句不切碎
 
-const SPK_COLORS = ["#2563eb", "#d97757", "#16a34a", "#9333ea", "#ca8a04", "#0891b2"];
+// 说话人配色：终端 ANSI 色（青 / 黄 / 品红 / 蓝 / 红 / 白）；不用绿（绿 = 当前播放句高亮）
+const SPK_COLORS = ["#56b6c2", "#e5c07b", "#c678dd", "#61afef", "#e06c75", "#abb2bf"];
 const colorForSpeaker = (label) => {
   const i = state.speakerOrder.indexOf(label);
   return SPK_COLORS[(i < 0 ? 0 : i) % SPK_COLORS.length];
@@ -93,7 +97,7 @@ function renderHistory(docs) {
     item.title = d.source && d.source !== display ? display + "\n" + d.source : display;
     const kind = document.createElement("span");
     kind.className = "hist-kind";
-    kind.textContent = d.kind === "web" ? "▤" : "▶";
+    kind.textContent = d.kind === "web" ? "▤" : d.kind === "audio" ? "♪" : "▶";
     const name = document.createElement("span");
     name.className = "hist-name";
     name.textContent = display;
@@ -119,11 +123,23 @@ async function ingestUrl() {
   if (!url) return;
   setStatus("正在抓取字幕…", "loading");
   try {
-    const data = await postJSON("/api/ingest/url", { url });
+    let data = await postJSON("/api/ingest/url", { url });
+    if (data.job_id) data = await waitIngestJob(data.job_id); // 播客：后台千问转写，轮询进度
     onIngested(data);
     toggleSettings(false); // 主动导入后收起面板
   } catch (e) {
     setStatus("导入失败：" + e.message, "error");
+  }
+}
+
+// 播客导入是后台任务（下载 → 千问转写，常要十几分钟）：轮询进度并显示在状态栏
+async function waitIngestJob(jobId) {
+  for (;;) {
+    const j = await getJSON("/api/ingest/job/" + jobId);
+    if (j.status === "done") return j.doc;
+    if (j.status === "error") throw new Error(j.error || "播客导入失败");
+    setStatus(j.message || "播客转写中…", "loading");
+    await new Promise((r) => setTimeout(r, 3000));
   }
 }
 
@@ -157,6 +173,8 @@ function onIngested(data) {
   state.segSpeaker = [];
   state.speakerOrder = [];
   state.speakerNames = {};
+  state.asrSpeakers = data.speakers_source === "asr";
+  state.fixterms = data.fixterms ?? null;
   state.cleanMode = false;
   state.cleanedMap = data.cleaned_map || {};
   state.collapsed = new Set();
@@ -173,12 +191,13 @@ function onIngested(data) {
   $("mode-clean").classList.remove("active");
   $("doc-title").textContent = data.video_id ? "" : (data.title || ""); // 视频名等播放器就绪后填
   renderChat(data.chat || []); // 刷新后恢复历史问答
-  mountVideo(data.video_id); // YouTube 源 → 嵌入吸顶播放器并联动；其他源自动隐藏
+  if (data.audio_url) mountAudio(data.audio_url, data.doc_id); // 播客 → <audio> 播放器，同一套控制条联动
+  else mountVideo(data.video_id); // YouTube 源 → 嵌入吸顶播放器并联动；其他源自动隐藏
   applyHideVideo(); // 恢复「隐藏视频」开关
 
   // 命中缓存 → 直接复用章节/说话人，无需重算
   const hasCachedChapters = data.chapters && data.chapters.length;
-  const hasCachedTurns = SPEAKERS_ENABLED && data.turns && data.turns.length;
+  const hasCachedTurns = speakersOn() && data.turns && data.turns.length;
   if (hasCachedTurns) {
     state.turns = data.turns;
     state.speakerOrder = data.speakers || [];
@@ -198,10 +217,10 @@ function onIngested(data) {
 
   const withGloss = () => { if (state.kind !== "web") fetchAllGlossary(); }; // 网页跳过生词标注
   if (hasCachedChapters) {
-    setStatus("已导入 ✓（复用缓存）");
+    setStatus("已导入 ✓（复用缓存）" + fixNote());
     fetchAllNotes().then(withGloss); // 补齐尚未生成的笔记 / 生词
   } else {
-    setStatus("已导入 ✓");
+    setStatus("已导入 ✓" + fixNote());
     fetchChapters(); // 首次导入：切分章节 → 笔记 → 生词
   }
   loadHistory(); // 刷新历史：把刚打开的置顶并高亮为当前
@@ -210,7 +229,7 @@ function onIngested(data) {
 // 说话人识别
 function renderSpeakerBar() {
   const bar = $("speaker-bar");
-  if (!SPEAKERS_ENABLED) { bar.hidden = true; return; }
+  if (!speakersOn()) { bar.hidden = true; return; }
   bar.hidden = !state.docId;
   bar.innerHTML = "";
   if (!state.docId) return;
@@ -232,17 +251,47 @@ function renderSpeakerBar() {
     const chip = document.createElement("span");
     chip.className = "spk-legend";
     chip.title = "点击重命名";
-    chip.innerHTML =
-      `<span class="spk-dot" style="background:${colorForSpeaker(label)}"></span>` +
-      `<span>${escapeHtml(displayName(label))}</span>`;
+    chip.style.setProperty("--spk", colorForSpeaker(label)); // 色块与正文左侧细线同色
+    chip.textContent = displayName(label);
     chip.onclick = () => renameSpeaker(label);
     bar.appendChild(chip);
   });
+  if (state.asrSpeakers) { bar.appendChild(fixtermsInfo()); return; } // 声学分离可靠，不提供「重新识别」
   const re = document.createElement("button");
   re.className = "ghost";
   re.textContent = "重新识别";
   re.onclick = () => identifySpeakers(true);
   bar.appendChild(re);
+}
+
+// 专有名词纠错状态：完成 → `# fixed: N terms`；没跑过 → [fix terms] 按钮补跑
+const fixNote = () => (state.fixterms == null ? "" : ` · 已纠正 ${state.fixterms} 处专有名词`);
+function fixtermsInfo() {
+  const el = document.createElement("span");
+  el.className = "fix-info";
+  if (state.fixterms != null) {
+    el.textContent = `# fixed: ${state.fixterms} terms`;
+    return el;
+  }
+  const btn = document.createElement("button");
+  btn.className = "ghost";
+  btn.textContent = "[fix terms]";
+  btn.title = "用节目 shownotes 当术语表，让 AI 纠正听错的专有名词（Opus→oppo 这类）";
+  btn.onclick = runFixterms;
+  el.appendChild(btn);
+  return el;
+}
+async function runFixterms() {
+  const docId = state.docId;
+  setStatus("纠正专有名词中…（每 300 句约 1 分钟）", "loading");
+  try {
+    const job = await postJSON("/api/fixterms", { doc_id: docId, backend: $("backend-select").value || undefined });
+    const doc = await waitIngestJob(job.job_id); // 进度（纠正专有名词… 3/12）显示在状态栏
+    if (state.docId !== docId) return; // 等待期间切了文档
+    onIngested(doc); // 整篇重载：旧章节 / 笔记已作废，按纠正后的原文重新生成
+  } catch (e) {
+    setStatus("纠错失败：" + e.message, "error");
+  }
 }
 
 function renameSpeaker(label) {
@@ -703,6 +752,7 @@ async function mountVideo(videoId) {
   if (player && player.destroy) { try { player.destroy(); } catch (e) {} }
   player = null; playerReady = false; activeEl = null;
   state.videoId = videoId || null;
+  pane.classList.remove("audio-mode");
   if (!videoId) { pane.hidden = true; return; }
   pane.hidden = false;
   document.querySelector(".video-frame").innerHTML = '<div id="yt-player"></div>';
@@ -725,6 +775,45 @@ async function mountVideo(videoId) {
       },
     },
   });
+}
+
+// 播放中？YouTube 与 <audio> 适配器都用 1 表示 PLAYING（不直接引用 YT，播客时它可能没加载）
+const isPlaying = () => !!(player && player.getPlayerState && player.getPlayerState() === 1);
+
+// 播客：把 <audio> 包成 YouTube 播放器的同名接口，字幕联动 / 控制条 / 快捷键 / 进度记忆全部复用
+async function mountAudio(url, docId) {
+  await mountVideo(null); // 先拆掉旧播放器、停跟随
+  const pane = $("video-pane");
+  pane.hidden = false;
+  pane.classList.add("audio-mode");
+  state.videoId = "audio:" + docId; // 进度记忆键 tq.pos.<id>
+  const el = document.createElement("audio");
+  el.preload = "metadata";
+  el.src = url;
+  document.querySelector(".video-frame").replaceChildren(el);
+  const onPlayState = () => {
+    $("vid-play").innerHTML = el.paused ? PLAY_SVG : PAUSE_SVG;
+    if (el.paused) { stopFollow(); savePos(); } else startFollow();
+  };
+  player = {
+    getCurrentTime: () => el.currentTime,
+    getDuration: () => (isFinite(el.duration) ? el.duration : 0),
+    seekTo: (t) => { el.currentTime = t; },
+    playVideo: () => { el.play().catch(() => {}); },
+    pauseVideo: () => el.pause(),
+    getPlayerState: () => (el.paused ? 2 : 1),
+    setPlaybackRate: (r) => { el.playbackRate = r; },
+    getPlaybackRate: () => el.playbackRate,
+    destroy: () => { el.pause(); el.removeAttribute("src"); el.load(); },
+  };
+  el.addEventListener("play", onPlayState);
+  el.addEventListener("pause", onPlayState);
+  // <audio> 不用等元数据就能 play/seek：立刻就绪，否则网慢时（或后台 tab 推迟加载）点播放没反应
+  playerReady = true;
+  restorePos();
+  applyRate(parseFloat(LS.get("tq.rate") || "1"));
+  el.addEventListener("loadedmetadata", initVidCtrl, { once: true }); // 时长到了再填进度条
+  el.addEventListener("error", () => setStatus("音频加载失败（链接可能过期）。字幕仍可阅读。", "error"));
 }
 
 // 视频名作标签页标题
@@ -927,7 +1016,9 @@ function paragraphBreaks(segs, s, e, o = PARA_OPTS) {
       const ends = _endsSentence(cur.text);
       if (_endsClause(cur.text)) lastClause = j;
       const runaway = chars >= o.maxChars * 2; // 无标点兜底，防止超长段
+      const spkChange = (cur.speaker || nxt.speaker) && cur.speaker !== nxt.speaker; // 换人必断段
       const breakHere =
+        spkChange ||
         (ends && (dur >= o.maxSec || chars >= o.maxChars || gap >= o.gapSec)) || // 句末 + 够长/有停顿
         (ends && dur >= o.hardSec) ||      // 句末 + 硬上限
         gap >= o.hardGap ||                // 明显长停顿，任何位置都断
@@ -1060,6 +1151,11 @@ function renderTranscript() {
 
     const text = document.createElement("div");
     text.className = "ptext";
+    const spk = speakersOn() ? state.segSpeaker[p.a] : null;
+    if (spk) { // 说话人 = 段落左侧一条细色线（颜色对照顶部图例），不占正文位置
+      para.classList.add("has-spk");
+      para.style.setProperty("--spk", colorForSpeaker(spk));
+    }
     if (state.cleanMode && !state.subtitleMode) {
       const span = document.createElement("span");
       span.className = "seg";
@@ -1342,7 +1438,7 @@ document.addEventListener("keydown", (e) => {
 // 自有视频控制条：播放/暂停 + 拖动进度
 function togglePlay() {
   if (!player || !playerReady) return;
-  if (player.getPlayerState() === YT.PlayerState.PLAYING) player.pauseVideo();
+  if (isPlaying()) player.pauseVideo();
   else player.playVideo();
 }
 $("vid-play").addEventListener("click", togglePlay);
@@ -1432,7 +1528,7 @@ document.addEventListener("keydown", (e) => {
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
   if (!player || !playerReady) return;
   e.preventDefault(); // 阻止默认的翻页滚动
-  if (player.getPlayerState() === YT.PlayerState.PLAYING) player.pauseVideo();
+  if (isPlaying()) player.pauseVideo();
   else player.playVideo();
 });
 

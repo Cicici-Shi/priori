@@ -519,3 +519,21 @@ ruby.gloss rt {
 ::-webkit-scrollbar-thumb:hover { background: #384236; }
 #sidebar ::-webkit-scrollbar-thumb { background: #232b22; border-color: var(--sidebar); }
 #chat-pane ::-webkit-scrollbar-thumb { border-color: var(--surface); }
+
+/* 播客：没有画面，只留控制条（<audio> 本身不可见） */
+.video-pane.audio-mode { padding-bottom: 10px; }
+.video-pane.audio-mode .video-frame, .video-pane.audio-mode .video-resize { display: none; }
+/* 说话人：终端聊天记录风（irssi / IRC 的 <nick>），等宽、不加粗 */
+.speaker-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 12px; font-size: 12px; color: var(--text-3); }
+.speaker-bar[hidden] { display: none; }
+.speaker-bar::before { content: "# speakers:"; }
+.spk-legend { cursor: pointer; color: var(--text-2, var(--text)); }
+.spk-legend::before { content: ""; display: inline-block; width: 2px; height: 11px; margin-right: 6px; vertical-align: -1px; background: var(--spk); }
+.spk-legend:hover { text-decoration: underline; text-underline-offset: 3px; }
+/* 正文里的说话人：段落左侧 2px 色线，同一人连续发言线条连成一片 */
+.para.has-spk .ptext { border-left: 2px solid var(--spk); padding-left: 10px; }
+.fix-info { margin-left: auto; color: var(--text-3); }
+.fix-info button { font: inherit; font-size: 12px; padding: 0 4px; }
+/* 中英文 / 数字之间自动留空（盘古之白）：排版层面加间距，不改文字本身——
+   纠错标注、选区定位、翻译缓存都按原文字符对齐，不能往数据里插空格 */
+body { text-autospace: normal; }

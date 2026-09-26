@@ -77,6 +77,37 @@ CLEAN_INSTRUCTION = """下面是英文口语转写的若干段落，每段以 [[
 输出：对每一段，另起一段、以 `[[原编号]]` 开头，后跟清洗后的英文文本。只输出这些段落。"""
 
 
+FIXTERMS_INSTRUCTION = """下面是一期中文播客的语音转写（每行：序号<TAB>句子）。转写引擎的中文整体很准，但会把一些词听成**发音相近的别的字词**，例如：
+- 专有名词：模型名 Opus → oppo / Opera，Gemini → german奶，eSIM → 异性 / ECM，节目名、主播名写成同音字；
+- 普通词的同音错字：「迎中秋」→「银中秋」，「智驾」→「支架」。
+
+请修正这两类「听错」的地方。依据：
+1. 下面给出的节目标题和 shownotes（里面的写法是正确的，优先照它来）；
+2. 上下文（前后句在聊什么）和你自己的常识。
+普通词只在**有把握**时改（shownotes 里有原词，或上下文明显说不通而同音词说得通）；拿不准就别改。
+
+**硬规则**：
+- 只替换听错的那个词，句子其余部分一个字都不许动：不改措辞、不改标点、不删口头禅和重复、不润色。
+- 不要合并或拆分句子。
+- 正确的英文名保持英文原样（如 Claude、Codex、DeepSeek），不要翻译成中文。
+
+**输出格式**：只输出需要修改的句子，每句一行：`序号 | 修改后的整句`。没有需要改的就只输出 `无`。不要任何解释。"""
+
+
+# 常见专有名词：比模型训练数据新、单集 shownotes 里又常常不写的名字。写法以此为准。
+# 与 TRANSLATE_INSTRUCTION 里 Sol 的提示同源；遇到新的反复听错的名字就加在这里。
+KNOWN_TERMS = """- OpenAI 模型档位：Sol、Terra、Luna（常见误听：Sol → 瘦 / Soul / 所；Luna → 露娜），如「GPT 6 的 Sol 和 Luna」
+- OpenAI：GPT 6 Astra、Codex、ChatGPT
+- Anthropic：Claude、Opus、Sonnet、Haiku、Fable、Claude Code
+- 其他模型 / 产品：Jev、Gemini、DeepSeek、Kimi、GLM、Qwen、Meta Muse、Grok"""
+
+
+def fixterms_prompt(title: str, notes: str, segments: list[dict[str, Any]], start: int, end: int) -> str:
+    lines = "\n".join(f"{i}\t{segments[i]['text']}" for i in range(start, end + 1))
+    return (f"{FIXTERMS_INSTRUCTION}\n\n## 节目标题\n{title}\n\n## shownotes\n{notes.strip() or '（无）'}"
+            f"\n\n## 常见专有名词（写法以此为准）\n{KNOWN_TERMS}\n\n## 转写\n{lines}")
+
+
 TRANSLATE_INSTRUCTION = """下面是英文转写的若干段落，每段以 [[编号]] 开头。请把每一段**通顺地翻译成简体中文**：
 
 - 忠实原意、口语自然，别逐字硬翻。
