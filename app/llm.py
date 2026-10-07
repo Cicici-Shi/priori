@@ -86,10 +86,14 @@ class LLMBackend(Protocol):
 
     def ask(self, prompt: str, session_id: str | None,
             images: list[Image] | None = None,
-            high_priority: bool = False, gate: bool = True) -> tuple[str, str]:
+            high_priority: bool = False, gate: bool = True,
+            effort: str | None = None) -> tuple[str, str]:
         """返回 (answer, session_id)。session_id 为空表示开新会话。images 非空时随图提问。
         high_priority=True 时在单车道闸门里插队（翻译用，优先于 summary/笔记）。
-        gate=False 绕过闸门：调用方自己控制并发（导入阶段的批处理，如播客专有名词纠错）。"""
+        gate=False 绕过闸门：调用方自己控制并发（导入阶段的批处理，如播客专有名词纠错）。
+        effort 对应 `claude --effort`（low/medium/high…，None 用默认），用来压 adaptive thinking：
+        2 小时访谈切章节，默认 593s 超时（2.6 万 thinking token），low 211s（1.1 万）。
+        注意别用 MAX_THINKING_TOKENS=正数 限预算——实测非但不封顶，thinking 反而翻倍到 6 万。"""
         ...
 
 
@@ -104,7 +108,8 @@ class ClaudeCLIBackend:
 
     def ask(self, prompt: str, session_id: str | None,
             images: list[Image] | None = None,
-            high_priority: bool = False, gate: bool = True) -> tuple[str, str]:
+            high_priority: bool = False, gate: bool = True,
+            effort: str | None = None) -> tuple[str, str]:
         # 带图：走 stream-json 输入把图当真图喂进去，复用流式路径累积成整段答案。
         if images:
             acc, new_session = [], session_id or ""
@@ -123,6 +128,8 @@ class ClaudeCLIBackend:
         cmd = [self.bin, "-p", prompt, "--output-format", "json"]
         if self.model:
             cmd += ["--model", self.model]
+        if effort:
+            cmd += ["--effort", effort]
         if session_id:
             cmd += ["--resume", session_id]
         # 全局排队：同一时刻只放行 LLM_MAX_CONCURRENCY 个 claude 进程；high 的能插队到 low 前面
@@ -227,7 +234,8 @@ class CodexCLIBackend:
 
     def ask(self, prompt: str, session_id: str | None,
             images: list[Image] | None = None,
-            high_priority: bool = False, gate: bool = True) -> tuple[str, str]:
+            high_priority: bool = False, gate: bool = True,
+            effort: str | None = None) -> tuple[str, str]:
         if images:
             raise LLMError("codex 引擎暂不支持就图片提问，请切到 claude 引擎。")
         # 预留实现：codex exec [resume <id>] --json。具体字段以装上后的版本为准。
@@ -281,7 +289,8 @@ class AgyCLIBackend:
 
     def ask(self, prompt: str, session_id: str | None,
             images: list[Image] | None = None,
-            high_priority: bool = False, gate: bool = True) -> tuple[str, str]:
+            high_priority: bool = False, gate: bool = True,
+            effort: str | None = None) -> tuple[str, str]:
         if images:
             raise LLMError("agy 引擎暂不支持就图片提问。")
         import tempfile

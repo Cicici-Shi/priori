@@ -353,6 +353,10 @@ class SummaryBody(BaseModel):
     seg_range: list[int] | None = None  # 说话人识别：只识别该片段区间
 
 
+# 章节/说话人识别用低 effort：默认 effort 在长文上 thinking 过多会超时，全关则概括变薄，low 折中。
+STRUCTURED_EFFORT = "low"
+
+
 def _fmt_ts(sec) -> str:
     if sec is None:
         return ""
@@ -469,7 +473,7 @@ def speakers(body: SummaryBody):
 
     try:
         backend = llm.get_backend(body.backend, body.model)
-        answer, new_session = backend.ask(prompt, session_id)
+        answer, new_session = backend.ask(prompt, session_id, effort=STRUCTURED_EFFORT)
     except llm.LLMError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -519,7 +523,7 @@ def summary(body: SummaryBody):
 
     try:
         backend = llm.get_backend(body.backend, body.model)
-        answer, new_session = backend.ask(prompt, session_id)
+        answer, new_session = backend.ask(prompt, session_id, effort=STRUCTURED_EFFORT)
     except llm.LLMError as e:
         raise HTTPException(status_code=502, detail=str(e))
 

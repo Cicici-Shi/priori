@@ -42,6 +42,10 @@ def extract_video_id(url: str) -> str | None:
 
 # 句末标点 + 可选引号/括号 + 必须跟空白：要求空白能避开 "3.5" / "U.S.A" / 网址里的点被误切。
 _SENT_BOUNDARY = re.compile(r"[.!?。！？…]+[\"'”’)\]]*\s+")
+# 超过这个长度的"句子"多半是无标点 ASR 里偶然一个句点切出来的巨块（如 "python 3." 把
+# 半小时切成一段），在原始字幕块边界处再细分，每段攒到 _CHUNK_CHARS 左右就断。
+_MAX_SENT_CHARS = 400
+_CHUNK_CHARS = 200
 
 
 def resegment_by_sentence(segments: list[Segment]) -> list[Segment]:
@@ -53,6 +57,7 @@ def resegment_by_sentence(segments: list[Segment]) -> list[Segment]:
     """
     chars: list[str] = []
     times: list[float] = []  # 与 chars 等长：第 k 个字符的时间
+    cuts: list[int] = []  # 块间补的空格位置 = 原始字幕块边界，可安全下刀
     for s in segments:
         text = s.get("text") or ""
         st, en = s.get("start"), s.get("end")
@@ -62,21 +67,35 @@ def resegment_by_sentence(segments: list[Segment]) -> list[Segment]:
         for k, ch in enumerate(text):
             chars.append(ch)
             times.append(st + (k / n if n else 0.0) * (en - st))
+        cuts.append(len(chars))
         chars.append(" ")  # 块间补空格，时间记块末
         times.append(en)
     full = "".join(chars)
 
     out: list[Segment] = []
+
+    def emit(a: int, b: int) -> None:  # full[a:b]，b 为开区间
+        txt = full[a:b].strip()
+        if not txt:
+            return
+        if len(txt) <= _MAX_SENT_CHARS:
+            out.append({"start": times[a], "end": times[b - 1], "text": txt})
+            return
+        start = a
+        for c in cuts:
+            if c <= start or c >= b:
+                continue
+            if c - start >= _CHUNK_CHARS and b - c >= _CHUNK_CHARS // 2:
+                out.append({"start": times[start], "end": times[c], "text": full[start:c].strip()})
+                start = c + 1
+        out.append({"start": times[start], "end": times[b - 1], "text": full[start:b].strip()})
+
     pos = 0
     for m in _SENT_BOUNDARY.finditer(full):
-        end = m.end()
-        txt = full[pos:end].strip()
-        if txt:
-            out.append({"start": times[pos], "end": times[end - 1], "text": txt})
-        pos = end
-    tail = full[pos:].strip()
-    if tail and pos < len(times):
-        out.append({"start": times[pos], "end": times[-1], "text": tail})
+        emit(pos, m.end())
+        pos = m.end()
+    if pos < len(full):
+        emit(pos, len(full))
 
     return out if len(out) >= 2 else segments  # 切不出句子 → 保留原始块，别揉成一个巨块
 
@@ -133,6 +152,8 @@ def from_youtube(url: str) -> tuple[list[Segment], str]:
 
     if not segments:
         raise IngestError("抓到的字幕是空的。")
+    # 人工上传的字幕偶尔不按时间排（如开场预告剪辑），先排序，否则时间戳倒挂、切句错位
+    segments.sort(key=lambda s: s["start"])
     segments = resegment_by_sentence(segments)  # 时间块 → 句子块，句末对齐
     return segments, f"YouTube {video_id}"
 
