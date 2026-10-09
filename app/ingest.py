@@ -120,8 +120,8 @@ def from_youtube(url: str) -> tuple[list[Segment], str]:
         tlist = api.list(video_id)
     except TranscriptsDisabled as e:
         raise IngestError("该视频关闭了字幕，无法抓取。请改为上传媒体或字幕文件。") from e
-    except Exception as e:  # noqa: BLE001
-        raise IngestError(f"抓取字幕失败：{e}") from e
+    except Exception as e:  # noqa: BLE001  # 多半是 IpBlocked/RequestBlocked
+        return _finish_youtube(_youtube_via_ytdlp(video_id, e), video_id)
 
     # 优先人工字幕（更准）；没有再退自动生成（ASR 会听错词，如 fun→up on）；
     # 最后退任意可用语言。
@@ -140,7 +140,7 @@ def from_youtube(url: str) -> tuple[list[Segment], str]:
     try:
         fetched = transcript.fetch()
     except Exception as e:  # noqa: BLE001
-        raise IngestError(f"抓取字幕失败：{e}") from e
+        return _finish_youtube(_youtube_via_ytdlp(video_id, e), video_id)
 
     segments: list[Segment] = []
     for snip in fetched:
@@ -150,12 +150,99 @@ def from_youtube(url: str) -> tuple[list[Segment], str]:
         if text:
             segments.append({"start": start, "end": start + dur, "text": text})
 
+    return _finish_youtube(segments, video_id)
+
+
+def _finish_youtube(segments: list[Segment], video_id: str) -> tuple[list[Segment], str]:
     if not segments:
         raise IngestError("抓到的字幕是空的。")
     # 人工上传的字幕偶尔不按时间排（如开场预告剪辑），先排序，否则时间戳倒挂、切句错位
     segments.sort(key=lambda s: s["start"])
     segments = resegment_by_sentence(segments)  # 时间块 → 句子块，句末对齐
-    return segments, f"YouTube {video_id}"
+    return segments, _youtube_title(video_id) or f"YouTube {video_id}"
+
+
+def _youtube_title(video_id: str) -> str | None:
+    """oEmbed 取视频标题：免登录、不受字幕接口的 IP 封禁影响。失败就返回 None。"""
+    import requests
+
+    session = requests.Session()
+    session.trust_env = False  # 同 from_youtube：绕开本机抓包代理
+    try:
+        r = session.get(
+            "https://www.youtube.com/oembed",
+            params={"url": f"https://www.youtube.com/watch?v={video_id}", "format": "json"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return (r.json().get("title") or "").strip() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _youtube_via_ytdlp(video_id: str, cause: Exception) -> list[Segment]:
+    """匿名字幕接口被 YouTube 按 IP 封（IpBlocked）时的回退：yt-dlp 带 Chrome 登录 cookie 抓。
+
+    语言优先级同上：英文人工 → 英文自动 → 任意人工 → 视频原声自动（"-orig" 或唯一一条）。
+    """
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+
+    ytdlp = shutil.which("yt-dlp") or ("/opt/homebrew/bin/yt-dlp" if Path("/opt/homebrew/bin/yt-dlp").exists() else None)
+    if not ytdlp:
+        raise IngestError(f"抓取字幕失败：{cause}（回退需要 yt-dlp，未安装）") from cause
+    # YouTube 现在要跑 JS 解签名；服务进程的 PATH 里未必有 deno/node，显式给路径
+    base = [ytdlp, "--cookies-from-browser", "chrome", "--skip-download", "--no-warnings"]
+    for name, cand in (("node", None), ("deno", Path.home() / ".deno/bin/deno")):
+        exe = shutil.which(name) or (str(cand) if cand and cand.exists() else None)
+        if exe:
+            base += ["--js-runtimes", f"{name}:{exe}"]
+            break
+    url = f"https://www.youtube.com/watch?v={video_id}"
+
+    def run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(base + args + [url], capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired as e:
+            raise IngestError("yt-dlp 抓字幕超时。") from e
+
+    info_p = run(["-J"])
+    if info_p.returncode != 0:  # 偶发 "The page needs to be reloaded"，重试一次
+        info_p = run(["-J"])
+    if info_p.returncode != 0:
+        err = info_p.stderr.strip().splitlines()[-1:] or [""]
+        raise IngestError(f"抓取字幕失败：{cause}；yt-dlp 回退也失败：{err[0]}") from cause
+    info = json.loads(info_p.stdout)
+    manual = {k for k in (info.get("subtitles") or {}) if k != "live_chat"}
+    auto = set(info.get("automatic_captions") or {})
+    lang = (
+        next((l for l in ("en", "en-US", "en-GB") if l in manual), None)
+        or next((l for l in ("en-orig", "en", "en-US") if l in auto), None)
+        or next(iter(sorted(manual)), None)
+        or next((l for l in sorted(auto) if l.endswith("-orig")), None)
+        or (info.get("language") if info.get("language") in auto else None)
+    )
+    if not lang:
+        raise IngestError("该视频没有可用字幕。请改为上传媒体或字幕文件。")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        flag = "--write-subs" if lang in manual else "--write-auto-subs"
+        p = run([flag, "--sub-langs", lang, "--sub-format", "json3", "-o", f"{tmp}/s.%(ext)s"])
+        files = list(Path(tmp).glob("*.json3"))
+        if p.returncode != 0 or not files:
+            raise IngestError(f"yt-dlp 下载字幕失败：{p.stderr.strip()[-300:]}")
+        data = json.loads(files[0].read_text(encoding="utf-8"))
+
+    segments: list[Segment] = []
+    for ev in data.get("events", []):
+        text = "".join(seg.get("utf8", "") for seg in ev.get("segs") or []).replace("\n", " ").strip()
+        if not text:
+            continue
+        start = ev.get("tStartMs", 0) / 1000
+        segments.append({"start": start, "end": start + ev.get("dDurationMs", 0) / 1000, "text": text})
+    return segments
 
 
 # --------------------------------------------------------------------------- #
