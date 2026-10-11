@@ -26,7 +26,7 @@ class IngestError(Exception):
 # --------------------------------------------------------------------------- #
 
 _YT_ID_PATTERNS = [
-    r"(?:v=|/v/|youtu\.be/|/embed/|/shorts/)([0-9A-Za-z_-]{11})",
+    r"(?:v=|/v/|youtu\.be/|/embed/|/shorts/|/live/)([0-9A-Za-z_-]{11})",
     r"^([0-9A-Za-z_-]{11})$",  # 直接传 11 位 id
 ]
 
