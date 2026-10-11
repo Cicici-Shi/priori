@@ -1624,6 +1624,7 @@ function initColResize(handleId, target, side, min, max, lsKey) {
     $(handleId).classList.add("dragging");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
+    document.body.classList.add("resizing");
     let last = startW;
     const move = (ev) => {
       const dx = ev.clientX - startX;
@@ -1636,6 +1637,7 @@ function initColResize(handleId, target, side, min, max, lsKey) {
       $(handleId).classList.remove("dragging");
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      document.body.classList.remove("resizing");
       LS.set(lsKey, Math.round(last)); // 拖完即存
     };
     document.addEventListener("mousemove", move);
@@ -1652,6 +1654,7 @@ $("video-resize").addEventListener("mousedown", (e) => {
   const startH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--video-h")) || 240;
   document.body.style.cursor = "row-resize";
   document.body.style.userSelect = "none";
+  document.body.classList.add("resizing");
   let last = startH;
   const move = (ev) => {
     last = Math.max(140, Math.min(560, startH + (ev.clientY - startY)));
@@ -1662,6 +1665,7 @@ $("video-resize").addEventListener("mousedown", (e) => {
     document.removeEventListener("mouseup", up);
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
+    document.body.classList.remove("resizing");
     LS.set("tq.videoH", Math.round(last)); // 拖完即存
   };
   document.addEventListener("mousemove", move);

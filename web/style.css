@@ -379,6 +379,8 @@ ruby.gloss rt {
   transition: background .12s;
 }
 .col-resize:hover, .col-resize.dragging { background: var(--accent-soft); }
+/* 拖动期间 iframe 不吃鼠标事件，否则鼠标移进视频画面就丢 mousemove / mouseup */
+body.resizing iframe { pointer-events: none; }
 /* 拖拽手柄做成一条边线（替代视频下方的分隔边框）*/
 .video-resize {
   width: 100%;
