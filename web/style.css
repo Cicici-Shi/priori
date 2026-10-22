@@ -434,7 +434,17 @@ body.resizing iframe { pointer-events: none; }
 }
 .chat-divider::before, .chat-divider::after { content: ""; flex: 1; border-top: 1px dashed var(--border-strong); }
 .chat-divider span { padding: 0 10px; }
-.chat { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 18px; }
+.chat-wrap { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.chat-jump {
+  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+  font: inherit; font-size: 12px; color: var(--accent-ink);
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 999px;
+  padding: 4px 12px; box-shadow: var(--shadow-sm); cursor: pointer;
+  transition: opacity .15s, transform .15s;
+}
+.chat-jump[hidden] { display: block; opacity: 0; pointer-events: none; transform: translate(-50%, 6px); }
+.chat-jump:hover { border-color: var(--accent-strong); }
+.chat { flex: 1; min-height: 0; overscroll-behavior: contain; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 18px; }
 .chat:empty::before { content: "选中字幕里的一段，或在下方直接提问，回答会出现在这里。"; color: var(--text-3); font-size: 13px; line-height: 1.7; }
 /* REPL 风：无气泡、无圆角；问题用 > 提示符，答案直接跟在下面 */
 .turn { display: flex; flex-direction: column; gap: 5px; }
@@ -451,6 +461,15 @@ body.resizing iframe { pointer-events: none; }
 .turn .q::before { content: "> "; color: var(--accent); font-weight: 700; }
 .turn .a { font-size: 13.5px; line-height: 1.75; color: var(--text); }
 .turn .a.pending { color: var(--text-3); }
+.copy-btn {
+  align-self: flex-start; font: inherit; font-size: 11.5px; color: var(--text-3);
+  background: none; border: 1px solid transparent; border-radius: var(--r-sm);
+  padding: 2px 8px; margin-left: -8px; cursor: pointer;
+  opacity: 0; transition: opacity .12s, color .12s, border-color .12s;
+}
+.turn:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
+.copy-btn:hover { color: var(--accent-ink); border-color: var(--border-strong); }
+.turn:has(.a.pending) .copy-btn { display: none; }
 
 /* Markdown */
 .md > :first-child { margin-top: 0; }
@@ -466,6 +485,8 @@ body.resizing iframe { pointer-events: none; }
 .md blockquote { margin: 8px 0; padding-left: 11px; border-left: 3px solid var(--border-strong); color: var(--text-2); }
 .md strong { font-weight: 600; }
 .md a { color: var(--accent-ink); }
+.md a.ts-link { text-decoration: none; border-bottom: 1px dashed currentColor; cursor: pointer; font-variant-numeric: tabular-nums; }
+.md a.ts-link:hover { background: var(--accent-soft); }
 
 /* 追问输入（多行 + 底部操作行） */
 #chat-input-bar {

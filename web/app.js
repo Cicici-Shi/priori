@@ -50,6 +50,15 @@ function fmtTs(sec) {
   return `${m}:${s}`;
 }
 
+// 抽样看汉字占比，超过三成算中文原文
+function isChineseText(segments) {
+  const sample = (segments || []).slice(0, 200).map((x) => x.text || "").join("");
+  const letters = sample.replace(/[\s\d\p{P}\p{S}]/gu, "");
+  if (!letters.length) return false;
+  const cjk = (letters.match(/\p{Script=Han}/gu) || []).length;
+  return cjk / letters.length > 0.3;
+}
+
 function setStatus(msg, kind = "") {
   const el = $("ingest-status");
   el.textContent = msg || "";
@@ -182,7 +191,11 @@ function onIngested(data) {
   state.glossBySeg = {};
   lastNoteCh = -1; lastNotePoint = null; // 复位笔记同步
   state.translatedMap = data.translated_map || {};
-  state.translateMode = LS.get("tq.translate") === "1"; // 恢复上次的翻译开关
+  // 原文本身是中文就默认不翻译；只在这篇里手动打开才开（不改全局偏好）
+  state.zhSource = isChineseText(state.segments);
+  state.translateMode = state.zhSource
+    ? LS.get("tq.translate.zh." + state.docId) === "1"
+    : LS.get("tq.translate") === "1"; // 恢复上次的翻译开关
   $("translate-toggle").checked = state.translateMode;
   state.subtitleMode = LS.get("tq.subtitle") === "1";   // 恢复逐句双语开关
   $("subtitle-toggle").checked = state.subtitleMode;
@@ -347,6 +360,9 @@ function applySpeakers(data) {
 function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
+
+// 单个 ~ 是「约」（~21%），不当删除线；只认 ~~删除~~
+marked.use({ tokenizer: { del(src) { return /^~(?!~)/.test(src) ? { type: "text", raw: "~", text: "~" } : false; } } });
 
 // Markdown → 安全 HTML
 function mdRender(text) {
@@ -1312,7 +1328,15 @@ async function runAsk({ selectedText = "", segRange = null, question, image = nu
     const reader = r.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
-    const atBottom = () => chat.scrollHeight - chat.scrollTop - chat.clientHeight < 60;
+    // 一帧最多重渲一次：delta 很碎，逐条 parse + 回流会卡
+    let raf = 0;
+    const paint = () => {
+      raf = 0;
+      turn.answerEl.classList.remove("pending");
+      turn.answerEl.innerHTML = renderAnswer(acc);
+      turn.answerEl.dataset.md = acc;
+      chatFollow();
+    };
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -1326,15 +1350,13 @@ async function runAsk({ selectedText = "", segRange = null, question, image = nu
         try { ev = JSON.parse(line); } catch { continue; }
         if (ev.type === "delta") {
           acc += ev.text;
-          const stick = atBottom();
-          turn.answerEl.classList.remove("pending");
-          turn.answerEl.innerHTML = mdRender(acc);
-          if (stick) chat.scrollTop = chat.scrollHeight;
+          if (!raf) raf = requestAnimationFrame(paint);
         } else if (ev.type === "error") {
           throw new Error(ev.error);
         }
       }
     }
+    if (raf) { cancelAnimationFrame(raf); paint(); }
     if (!acc) turn.answerEl.textContent = "(空回答)";
   } catch (e) {
     turn.answerEl.classList.remove("pending");
@@ -1383,9 +1405,36 @@ function addTurn(selectedText, question) {
   a.textContent = "思考中…";
   turn.appendChild(a);
 
+  const copy = document.createElement("button");
+  copy.className = "copy-btn";
+  copy.textContent = "复制";
+  copy.title = "复制回答（粘到富文本软件保留格式，粘到纯文本处是 Markdown）";
+  copy.addEventListener("click", () => copyAnswer(a, copy));
+  turn.appendChild(copy);
+
   chat.appendChild(turn);
-  chat.scrollTop = chat.scrollHeight;
+  chatStickToBottom();
   return { answerEl: a };
+}
+
+// 复制回答：同时放 HTML（飞书/Notion 等保留格式）和 Markdown 原文（纯文本编辑器）
+async function copyAnswer(answerEl, btn) {
+  const md = answerEl.dataset.md;
+  if (!md) return;
+  const box = document.createElement("div");
+  box.innerHTML = answerEl.innerHTML;
+  box.querySelectorAll("a.ts-link").forEach((x) => x.replaceWith(x.textContent)); // 时间戳链接在别处没意义
+  try {
+    await navigator.clipboard.write([new ClipboardItem({
+      "text/plain": new Blob([md], { type: "text/plain" }),
+      "text/html": new Blob([box.innerHTML], { type: "text/html" }),
+    })]);
+  } catch {
+    await navigator.clipboard.writeText(md);
+  }
+  btn.textContent = "已复制";
+  clearTimeout(btn._t);
+  btn._t = setTimeout(() => { btn.textContent = "复制"; }, 1500);
 }
 
 function addChatDivider() {
@@ -1403,10 +1452,98 @@ function renderChat(entries) {
     if (en.divider) { addChatDivider(); return; }
     const turn = addTurn(en.selected || "", en.question || "");
     turn.answerEl.classList.remove("pending");
-    turn.answerEl.innerHTML = mdRender(en.answer || "");
+    turn.answerEl.innerHTML = renderAnswer(en.answer || "");
+    turn.answerEl.dataset.md = en.answer || "";
   });
-  chat.scrollTop = chat.scrollHeight;
+  chatStickToBottom();
 }
+
+
+// 回答里的时间戳（12:34 / [12:34] / 1:02:03）→ 可点击跳转
+const TS_RE = /(?<![\d:])(?:(\d{1,2}):)?(\d{1,3}):([0-5]\d)(?![\d:])/g;
+function renderAnswer(text) {
+  const box = document.createElement("div");
+  box.innerHTML = mdRender(text);
+  const dur = player && player.getDuration ? player.getDuration() : 0;
+  const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => n.parentElement.closest("a, code, pre") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+  });
+  const nodes = [];
+  while (walker.nextNode()) if (/\d:[0-5]\d/.test(walker.currentNode.nodeValue)) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const str = node.nodeValue;
+    const frag = document.createDocumentFragment();
+    let last = 0, m;
+    TS_RE.lastIndex = 0;
+    while ((m = TS_RE.exec(str))) {
+      const sec = (+(m[1] || 0)) * 3600 + (+m[2]) * 60 + (+m[3]);
+      if (dur && sec > dur + 5) continue; // 超出时长的不是时间戳（比如钟点）
+      frag.append(str.slice(last, m.index));
+      const a = document.createElement("a");
+      a.className = "ts-link";
+      a.dataset.sec = sec;
+      a.textContent = m[0];
+      a.title = "跳到 " + m[0];
+      frag.append(a);
+      last = m.index + m[0].length;
+    }
+    if (!last) continue;
+    frag.append(str.slice(last));
+    node.replaceWith(frag);
+  }
+  return box.innerHTML;
+}
+
+// 对话区跟随：默认贴底；用户一往上滚（滚轮/触摸/键盘/拖滚动条）立刻松开，
+// 自己滚回底部才重新贴上。不用「离底部 N px」判断，否则刚开始往上滑那几下会被拽回去。
+let chatStick = true, chatUserScrolling = 0;
+function chatDist() { const c = $("chat"); return c.scrollHeight - c.scrollTop - c.clientHeight; }
+function chatSetStick(v) {
+  chatStick = v;
+  $("chat-jump").hidden = v || chatDist() < 4;
+}
+function chatFollow() {
+  const c = $("chat");
+  if (chatStick && !c.matches(":active")) c.scrollTop = c.scrollHeight;
+  else $("chat-jump").hidden = chatDist() < 4;
+}
+function chatStickToBottom(smooth = false) {
+  const c = $("chat");
+  chatSetStick(true);
+  c.scrollTo({ top: c.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+}
+(function initChatScroll() {
+  const c = $("chat");
+  const userActive = () => { chatUserScrolling = Date.now() + 600; };
+  c.addEventListener("wheel", (e) => { userActive(); if (e.deltaY < 0) chatSetStick(false); }, { passive: true });
+  c.addEventListener("touchstart", userActive, { passive: true });
+  c.addEventListener("touchmove", () => { userActive(); chatSetStick(false); }, { passive: true });
+  // 按住拖（滚动条、选字）期间不自动跟随；松手时按位置决定是否贴底
+  let pressTop = null;
+  c.addEventListener("pointerdown", () => { pressTop = c.scrollTop; });
+  window.addEventListener("pointerup", () => {
+    if (pressTop == null) return;
+    if (c.scrollTop !== pressTop) chatSetStick(chatDist() < 4);
+    pressTop = null;
+  });
+  c.addEventListener("scroll", () => { if (pressTop != null && c.scrollTop < pressTop) chatSetStick(false); }, { passive: true });
+  c.addEventListener("keydown", (e) => {
+    if (["ArrowUp", "PageUp", "Home"].includes(e.key)) { userActive(); chatSetStick(false); }
+  });
+  c.addEventListener("scroll", () => {
+    if (Date.now() > chatUserScrolling) return; // 程序滚动或内容变化，不改状态
+    userActive(); // 惯性滚动期间持续算用户的
+    if (chatDist() < 4) chatSetStick(true);
+    else if (!chatStick) $("chat-jump").hidden = false;
+  }, { passive: true });
+  $("chat-jump").addEventListener("click", () => chatStickToBottom(true));
+  c.addEventListener("click", (e) => {
+    const a = e.target.closest("a.ts-link");
+    if (!a) return;
+    e.preventDefault();
+    seekVideo(parseFloat(a.dataset.sec));
+  });
+})();
 
 // 事件绑定
 $("url-btn").addEventListener("click", ingestUrl);
@@ -1485,7 +1622,8 @@ window.addEventListener("blur", () => {
 // 翻译开关（是否显示译文，独立于切分粒度）
 $("translate-toggle").addEventListener("change", (e) => {
   state.translateMode = e.target.checked;
-  LS.set("tq.translate", e.target.checked ? "1" : "0"); // 开关状态存本地
+  // 中文原文的开关只记在这篇上，英文的才是全局偏好
+  LS.set(state.zhSource ? "tq.translate.zh." + state.docId : "tq.translate", e.target.checked ? "1" : "0");
   renderTranscript();
   if (state.translateMode) ensureTranslated();
 });

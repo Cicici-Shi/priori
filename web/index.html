@@ -116,7 +116,10 @@ $ open [cfg] → paste a url or upload a file</pre>
             <span>对话</span>
             <button id="new-session" class="new-session-btn" title="开新会话：不再背旧上下文缓存，更省（历史仍保留显示）">+ 新对话</button>
           </div>
-          <div id="chat" class="chat"></div>
+          <div class="chat-wrap">
+            <div id="chat" class="chat"></div>
+            <button id="chat-jump" class="chat-jump" hidden title="回到最新">↓ 最新</button>
+          </div>
           <div id="chat-input-bar">
             <div class="prompt-row">
               <span class="prompt-sigil">&gt;</span>

@@ -58,6 +58,9 @@ _CLAUDE_GATE = _PriorityGate(int(os.environ.get("LLM_MAX_CONCURRENCY", "1")))
 # 默认模型：Sonnet 4.6（质量够、比 Opus 快且省额度）。
 # 可用 CLAUDE_MODEL 覆盖，接受别名（sonnet/opus/haiku）或完整 id（claude-sonnet-4-6 等）。
 DEFAULT_CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+# headless `claude -p` 没人点确认，未预先放行的工具一律被拒（结果里 permission_denials 可见），
+# 所以问答时查不了网。显式放行联网的两个只读工具。
+CLAUDE_ALLOWED_TOOLS = ["--allowedTools", "WebSearch", "WebFetch"]
 
 
 class LLMError(Exception):
@@ -125,7 +128,7 @@ class ClaudeCLIBackend:
                 raise LLMError("claude 返回了空答案。")
             return answer, new_session
 
-        cmd = [self.bin, "-p", prompt, "--output-format", "json"]
+        cmd = [self.bin, "-p", prompt, "--output-format", "json", *CLAUDE_ALLOWED_TOOLS]
         if self.model:
             cmd += ["--model", self.model]
         if effort:
@@ -178,6 +181,7 @@ class ClaudeCLIBackend:
         else:
             cmd = [self.bin, "-p", prompt, "--output-format", "stream-json",
                    "--include-partial-messages", "--verbose"]
+        cmd += CLAUDE_ALLOWED_TOOLS
         if self.model:
             cmd += ["--model", self.model]
         if session_id:
