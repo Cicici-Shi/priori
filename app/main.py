@@ -329,6 +329,7 @@ class AskBody(BaseModel):
     image: str | None = None  # 针对某张图提问时：图片 URL，后端按需拉字节当真图喂模型
     backend: str | None = None  # 可覆盖默认引擎
     model: str | None = None  # 可覆盖默认模型（仅 claude 引擎）
+    view_seg: int | None = None  # 用户此刻在看的那句（播放位置/视口顶部）；长稿没选中时按它取原文
 
 
 def _ask_images(image: str | None) -> list[tuple[bytes, str]] | None:
@@ -503,6 +504,56 @@ def speakers(body: SummaryBody):
             "model": getattr(backend, "model", None)}
 
 
+# 超长稿（如 4 小时播客，8 万多字）一次喂全文切章节，单次调用会超时。超过这个字数就按
+# 窗口分块：每窗约 WINDOW_CHARS 字，单独无状态调用切出本窗章节，再按全局序号拼起来。
+# 窗尾那章多半被硬切断，丢掉它，下一窗从它的起点重切，这样跨窗的话题能完整落进下一窗。
+# 不建问答会话，之后第一次提问再喂全文。
+LONG_DOC_CHARS = 50_000
+WINDOW_CHARS = 25_000
+
+
+def _window_end(segments: list[dict], lo: int) -> int:
+    """从 lo 往后累计到 WINDOW_CHARS 字的末句序号；剩下不到三分之一窗就一并吞掉。"""
+    acc, n = 0, len(segments)
+    for i in range(lo, n):
+        acc += len(segments[i]["text"])
+        if acc >= WINDOW_CHARS:
+            rest = sum(len(s["text"]) for s in segments[i + 1:])
+            return n - 1 if rest < WINDOW_CHARS // 3 else i
+    return n - 1
+
+
+def _summary_windowed(body: "SummaryBody", segments: list[dict]) -> dict:
+    chapters: list[dict] = []
+    backend = None
+    n, lo = len(segments), 0
+    while lo < n:
+        hi = _window_end(segments, lo)
+        part = segments[lo:hi + 1]  # 窗内用局部序号 0..m-1，解析后再加 lo
+        prompt = prompts.first_turn(part, "", prompts.chapters_instruction(part), None)
+        try:
+            backend = llm.get_backend(body.backend, body.model)
+            answer, _ = backend.ask(prompt, None, effort=STRUCTURED_EFFORT)
+        except llm.LLMError as e:
+            raise HTTPException(status_code=502, detail=f"片段 {lo}–{hi}：{e}")
+        got = _parse_chapters(answer, len(part))
+        for ch in got:
+            ch["start"] += lo
+            ch["end"] += lo
+        if hi < n - 1 and len(got) > 1:
+            tail = got.pop()  # 窗尾章不收，下一窗从它开头重切
+            got[-1]["end"] = tail["start"] - 1
+            lo = tail["start"]
+        else:
+            lo = hi + 1
+        chapters.extend(got)
+    for ch in chapters:
+        ch["start_ts"] = _fmt_ts(segments[ch["start"]].get("start"))
+        ch["end_ts"] = _fmt_ts(segments[ch["end"]].get("end") or segments[ch["end"]].get("start"))
+    store.update(body.doc_id, chapters=chapters, ctx_chapters=[])  # 重切后章节序号变了，已见清零
+    return {"chapters": chapters, "session_id": None, "model": getattr(backend, "model", None)}
+
+
 @app.post("/api/summary")
 def summary(body: SummaryBody):
     """生成分章节摘要：每章带 transcript 片段区间 + 时间戳，供前端定位。"""
@@ -514,6 +565,8 @@ def summary(body: SummaryBody):
         return {"chapters": doc["chapters"], "cached": True, "model": None}
 
     segments = doc["segments"]
+    if sum(len(s["text"]) for s in segments) > LONG_DOC_CHARS:
+        return _summary_windowed(body, segments)
     session_id = doc.get("session_id")
     q = prompts.chapters_instruction(segments)
     if session_id:
@@ -573,6 +626,10 @@ def _parse_notes(text: str, n: int) -> tuple[str, list[dict]]:
             points[-1].setdefault("details", []).append({"seg": seg, "text": txt})
         else:
             points.append({"seg": seg, "text": txt})
+    # 按原文先后排：模型偶尔会把后面的要点提到前面，点开跳转时时间会倒着走
+    points.sort(key=lambda p: p["seg"])
+    for p in points:
+        p.get("details", []).sort(key=lambda d: d["seg"])
     return gist, points
 
 
@@ -678,31 +735,72 @@ def session_new(body: DocIdBody):
     return {"ok": True}
 
 
+def _full_text_file(doc: dict) -> str:
+    """长稿全文落一份文本文件（第 k+1 行 = 片段 k），供问答时模型按目录自己 Read/Grep。"""
+    path = store.DATA_DIR / "ctx" / f"{doc['doc_id']}.txt"
+    text = prompts.render_transcript(doc["segments"]) + "\n"
+    if not path.exists() or path.read_text() != text:
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(text)
+    return str(path)
+
+
+def _ask_prompt(doc: dict, body: AskBody) -> tuple[str, list[int] | None, str | None]:
+    """构造问答 prompt。返回 (prompt, 会话已见章节, 放行读取的全文文件)；后两项为 None 表示走全文模式。
+
+    长稿（且已切好章节）不喂全文：只喂目录 + 选中处/正在看的位置所在章及前后各一章，
+    会话里记下已发过哪些章（ctx_chapters），追问只补没发过的。旧会话若已喂过全文
+    （有 session 但没有 ctx_chapters），保持全文模式续问。
+    """
+    segments = doc["segments"]
+    session_id = doc.get("session_id")
+    chapters = doc.get("chapters") or []
+    long_mode = (chapters and sum(len(s["text"]) for s in segments) > LONG_DOC_CHARS
+                 and (not session_id or "ctx_chapters" in doc))
+    if not long_mode:
+        if session_id:
+            return prompts.follow_up(body.selected_text, body.question, body.seg_range, segments), None, None
+        return prompts.first_turn(segments, body.selected_text, body.question, body.seg_range), None, None
+
+    n = len(segments)
+    clamp = lambda i: max(0, min(int(i), n - 1))
+    if body.seg_range and len(body.seg_range) == 2:
+        a, b = clamp(body.seg_range[0]), clamp(body.seg_range[1])
+    else:
+        a = b = clamp(body.view_seg or 0)
+    of = lambda i: next((k for k, c in enumerate(chapters) if c["start"] <= i <= c["end"]), 0)
+    want = range(max(0, of(a) - 1), min(len(chapters), of(b) + 2))
+    sent = set(doc.get("ctx_chapters") or []) if session_id else set()
+    new = [k for k in want if k not in sent]
+    full = _full_text_file(doc)
+    prompt = prompts.long_turn(segments, chapters, new, not session_id,
+                               body.selected_text, body.question, body.seg_range, a, full)
+    return prompt, sorted(sent | set(new)), full
+
+
 @app.post("/api/ask")
 def ask(body: AskBody):
     doc = store.load(body.doc_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="文档不存在，请重新导入。")
 
-    segments = doc["segments"]
     session_id = doc.get("session_id")
-
-    if session_id:
-        prompt = prompts.follow_up(body.selected_text, body.question, body.seg_range, segments)
-    else:
-        prompt = prompts.first_turn(segments, body.selected_text, body.question, body.seg_range)
+    prompt, ctx, full = _ask_prompt(doc, body)
     images = _ask_images(body.image)
     if images:
         prompt = prompts.with_image(prompt)
 
     try:
         backend = llm.get_backend(body.backend, body.model)
-        answer, new_session = backend.ask(prompt, session_id, images=images)
+        extra = {"read_file": full} if full and backend.name == "claude" else {}
+        answer, new_session = backend.ask(prompt, session_id, images=images, **extra)
     except llm.LLMError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
     if new_session and new_session != session_id:
         store.set_session(body.doc_id, new_session)
+    if new_session and ctx is not None:
+        store.update(body.doc_id, ctx_chapters=ctx)
 
     return {
         "answer": answer,
@@ -809,12 +907,8 @@ def ask_stream(body: AskBody):
     if doc is None:
         raise HTTPException(status_code=404, detail="文档不存在，请重新导入。")
 
-    segments = doc["segments"]
     session_id = doc.get("session_id")
-    if session_id:
-        prompt = prompts.follow_up(body.selected_text, body.question, body.seg_range, segments)
-    else:
-        prompt = prompts.first_turn(segments, body.selected_text, body.question, body.seg_range)
+    prompt, ctx, full = _ask_prompt(doc, body)
     images = _ask_images(body.image)
     if images:
         prompt = prompts.with_image(prompt)
@@ -827,13 +921,16 @@ def ask_stream(body: AskBody):
     def gen():
         acc = []
         try:
-            for kind, val in backend.ask_stream(prompt, session_id, images):
+            extra = {"read_file": full} if full and backend.name == "claude" else {}
+            for kind, val in backend.ask_stream(prompt, session_id, images, **extra):
                 if kind == "text":
                     acc.append(val)
                     yield json.dumps({"type": "delta", "text": val}, ensure_ascii=False) + "\n"
                 elif kind == "session":
                     if val and val != session_id:
                         store.set_session(body.doc_id, val)
+                    if val and ctx is not None:
+                        store.update(body.doc_id, ctx_chapters=ctx)
                     answer = "".join(acc).strip()
                     if answer:  # 落盘，刷新后可恢复
                         store.append_chat(body.doc_id, {

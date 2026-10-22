@@ -17,7 +17,7 @@ SYSTEM = """你是一个帮助用户看懂视频/音频字幕的助手。用户�
 - 当用户选中的是英文时，先解释这句的意思，再补充必要的背景知识（人名、产品、术语、梗、上下文）。
 - 回答要紧扣用户选中的那一段，结合整篇 transcript 的上下文，但不要泛泛复述全文。
 - 可以引用时间戳（如 [12:34]）帮助用户定位。
-- 简洁清楚，必要时用要点列出。"""
+- 先给结论，再给原文里的具体依据：例子、数字、清单、原话，别只给概括。必要时用要点列出。"""
 
 
 _CHAPTERS_FORMAT = """**输出格式**：每个章节占一行，用竖线 `|` 分隔 4 个字段，顺序固定：
@@ -38,7 +38,9 @@ def chapters_instruction(segments: list[dict[str, Any]]) -> str:
     """按时长动态决定章节数：约每 4–5 分钟一章，避免长视频被压成一两个大章。"""
     n = len(segments)
     last = segments[-1] if segments else {}
-    dur_s = last.get("end") or last.get("start") or 0
+    first = segments[0] if segments else {}
+    # 用首尾差算时长：长稿分窗切章时传进来的是中间一段，不能只看末句时间戳。
+    dur_s = (last.get("end") or last.get("start") or 0) - (first.get("start") or 0)
     # 无时间戳来源（.txt）兜底：粗估每 8 段约 1 分钟。
     dur_min = (dur_s / 60) if dur_s else (n / 8)
     target = max(4, min(round(dur_min / 4.5), 30))
@@ -49,6 +51,8 @@ def chapters_instruction(segments: list[dict[str, Any]]) -> str:
         "**务必覆盖到最后一个片段，不要把大段后半程内容压进同一章**）。"
         "每章覆盖一段**连续的片段序号**；章节之间首尾相接、不重叠、不留空"
         "（第一章起始序号为 0，最后一章结束序号为最后一个片段的序号，序号连续衔接）。\n\n"
+        "**边界放在话题真正切换的那一句**：一段讲述末尾的收尾、总结仍属于上一章，"
+        "不要因为收尾换了个角度就提前切开；访谈里主持人或提问者提出新问题的地方通常才是新章起点。\n\n"
         + _CHAPTERS_FORMAT
     )
 
@@ -159,7 +163,7 @@ NOTES_INSTRUCTION = """你在为一段课程做「重读即可回忆」的笔记
 
 产出（只输出下面这些行，不要任何解释 / 表头 / 编号 / 代码块）：
 - 第一行写主旨，格式： > 序号 | 一句话说清这章在讲什么（不超过 30 字）
-- 然后 3~5 条要点，每条一行，格式： 序号 | 要点
+- 然后若干条要点，每条一行，格式： 序号 | 要点。**一件事一条**：这章讲了几件独立的事就写几条，不为凑少而合并或删掉不同的事；但**同一件事只写一条**，它的机制、数据、例子、补充说明都挂成下面的细节，不要拆成多条要点。列举型内容（几种方法 / 几个维度）每一项都要写到。要点按原文先后排列。
 - 若某条要点有关键的例子 / 数字 / 反例，可另起一行挂在它下方，**行首加两个空格**： 序号 | 细节
 
 每条要点的硬性要求：
@@ -204,9 +208,10 @@ def _fmt_ts(sec: Any) -> str:
     return f"{sec // 60:02d}:{sec % 60:02d}"
 
 
-def render_transcript(segments: list[dict[str, Any]]) -> str:
+def render_transcript(segments: list[dict[str, Any]], offset: int = 0) -> str:
+    """offset：传入的是整篇中的一段时，序号仍按整篇编号。"""
     lines = []
-    for i, s in enumerate(segments):
+    for i, s in enumerate(segments, offset):
         ts = _fmt_ts(s.get("start"))
         prefix = f"[{ts}] " if ts else ""
         lines.append(f"{i}\t{prefix}{s['text']}")
@@ -244,6 +249,66 @@ def follow_up(selected: str, question: str, seg_range: list[int] | None,
     if selected:
         return f"{_selection_block(selected, seg_range, segments)}\n\n用户的问题：{question}"
     return f"用户的问题（针对整篇 transcript）：{question}"
+
+
+def _excerpts(segments: list[dict], chapters: list[dict], idxs: list[int]) -> str:
+    parts = []
+    for i in idxs:
+        ch = chapters[i]
+        a, b = ch["start"], ch["end"]
+        parts.append(f"## [{ch.get('start_ts', '')}–{ch.get('end_ts', '')}] {ch['title']}（片段 {a}–{b}）\n"
+                     f"{render_transcript(segments[a:b + 1], a)}")
+    return "<excerpts>\n" + "\n\n".join(parts) + "\n</excerpts>"
+
+
+def _toc_entry(c: dict) -> str:
+    """目录里的一章：有笔记就放笔记（主旨 + 要点 + 细节），没有就退回一句概括。"""
+    head = f"[{c.get('start_ts', '')}] {c['title']} | 片段 {c['start']}–{c['end']}"
+    if not c.get("points"):
+        return f"{head} | {c.get('summary', '')}"
+    lines = [head, f"  主旨：{c.get('gist') or c.get('summary', '')}"]
+    for p in c["points"]:
+        lines.append(f"  - [{p.get('ts', '')}] {p['text']}")
+        lines += [f"    · [{d.get('ts', '')}] {d['text']}" for d in p.get("details", [])]
+    return "\n".join(lines)
+
+
+def long_turn(segments: list[dict], chapters: list[dict], new_idxs: list[int], first: bool,
+              selected: str, question: str, seg_range: list[int] | None, anchor: int,
+              full_path: str) -> str:
+    """长稿问答：不喂全文，只喂章节目录 + 用户所在位置附近几章原文。
+
+    首轮带系统指令和全篇目录；之后只补这个会话还没见过的章节原文，会话上下文只随用户
+    看过的区域增长。
+    """
+    out = []
+    if first:
+        toc = "\n".join(_toc_entry(c) for c in chapters)
+        out.append(
+            f"{SYSTEM}\n\n"
+            "这篇 transcript 很长，全文不放进来。下面是全篇的章节目录：每章的时间戳、标题、片段区间，"
+            "以及这章的笔记（主旨、要点、挂在要点下的细节；还没生成笔记的章只有一句概括）；"
+            "再加上用户当前所在位置附近几章的原文（每行：序号<TAB>[时间戳] 文本）。"
+            "之后用户换到别处提问时会补上那里的原文。\n\n"
+            f"全文在文件 `{full_path}` 里，第 k+1 行就是片段 k（格式同上）。"
+            "**笔记里写到的内容可以直接引用；笔记没写到的观点、数字、例子、清单、原话，"
+            "必须先读原文再说，不准凭笔记或自己的知识补。**知道是哪章，"
+            "就按目录里的片段区间用 Read 读对应行（offset=起始片段+1，limit=片段数）；"
+            "只知道关键词，就用 Grep 在这个文件里搜。只读真正需要的部分，不要整篇读。\n\n"
+            f"<chapters>\n{toc}\n</chapters>")
+    if new_idxs:
+        out.append(("补充原文：\n" if not first else "") + _excerpts(segments, chapters, new_idxs))
+    if selected:
+        out.append(_selection_block(selected, seg_range, segments))
+    else:
+        ci = next((i for i, c in enumerate(chapters) if c["start"] <= anchor <= c["end"]), 0)
+        out.append(f"用户没有选中文字，正在看 [{_fmt_ts(segments[anchor].get('start'))}] 附近"
+                   f"（「{chapters[ci]['title']}」这一节），问题多半针对这里。")
+    # 每轮都提醒：用户界面只有时间戳和标题，没有章号、片段号
+    out.append("（笔记没写到的具体内容，先 Read 原文再说，不要凭概括或自己的知识补；"
+               "提到位置时用 [分:秒] 时间戳加标题，不要说「第几章」或片段序号。）")
+    out.append(f"用户的问题：{question}")
+    return "\n\n".join(out)
 
 
 def with_image(prompt: str) -> str:

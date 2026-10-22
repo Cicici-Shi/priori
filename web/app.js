@@ -1319,6 +1319,7 @@ async function runAsk({ selectedText = "", segRange = null, question, image = nu
       body: JSON.stringify({
         doc_id: state.docId, question,
         selected_text: selectedText, seg_range: segRange, image, backend,
+        view_seg: priorityAnchorIdx(), // 长稿没选中时，后端按这里取原文
       }),
     });
     if (!r.ok) {

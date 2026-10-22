@@ -112,11 +112,11 @@ class ClaudeCLIBackend:
     def ask(self, prompt: str, session_id: str | None,
             images: list[Image] | None = None,
             high_priority: bool = False, gate: bool = True,
-            effort: str | None = None) -> tuple[str, str]:
+            effort: str | None = None, read_file: str | None = None) -> tuple[str, str]:
         # 带图：走 stream-json 输入把图当真图喂进去，复用流式路径累积成整段答案。
         if images:
             acc, new_session = [], session_id or ""
-            for kind, val in self.ask_stream(prompt, session_id, images):
+            for kind, val in self.ask_stream(prompt, session_id, images, read_file):
                 if kind == "text":
                     acc.append(val)
                 elif kind == "session":
@@ -129,6 +129,8 @@ class ClaudeCLIBackend:
             return answer, new_session
 
         cmd = [self.bin, "-p", prompt, "--output-format", "json", *CLAUDE_ALLOWED_TOOLS]
+        if read_file:
+            cmd += [f"Read(/{read_file})", f"Grep(/{read_file})"]
         if self.model:
             cmd += ["--model", self.model]
         if effort:
@@ -169,7 +171,7 @@ class ClaudeCLIBackend:
         return answer, new_session
 
     def ask_stream(self, prompt: str, session_id: str | None,
-                   images: list[Image] | None = None):
+                   images: list[Image] | None = None, read_file: str | None = None):
         """流式生成。yield ("text", 增量) 若干次，最后 yield ("session", id) 或 ("error", msg)。
 
         images 非空时，prompt+图作为一条 user message 从 stdin 走 stream-json 输入
@@ -182,6 +184,8 @@ class ClaudeCLIBackend:
             cmd = [self.bin, "-p", prompt, "--output-format", "stream-json",
                    "--include-partial-messages", "--verbose"]
         cmd += CLAUDE_ALLOWED_TOOLS
+        if read_file:  # 长稿问答：只放行读/搜这一份转写文件，让模型按目录自己去取没发过的原文
+            cmd += [f"Read(/{read_file})", f"Grep(/{read_file})"]
         if self.model:
             cmd += ["--model", self.model]
         if session_id:

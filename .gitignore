@@ -7,3 +7,4 @@ data/*.tmp
 log/
 *.out
 .DS_Store
+data/ctx/
