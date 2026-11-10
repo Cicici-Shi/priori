@@ -55,9 +55,12 @@ class _PriorityGate:
 
 _CLAUDE_GATE = _PriorityGate(int(os.environ.get("LLM_MAX_CONCURRENCY", "1")))
 
-# 默认模型：Sonnet 4.6（质量够、比 Opus 快且省额度）。
+# 默认模型：Sonnet 5.5（比 4.6 单价低三分之一、知识更新）。
 # 可用 CLAUDE_MODEL 覆盖，接受别名（sonnet/opus/haiku）或完整 id（claude-sonnet-4-6 等）。
-DEFAULT_CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+DEFAULT_CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
+# 翻译 / 专有名词纠错这类量大、规则明确的活用 Haiku 5.5（单价约 Sonnet 5.5 的 1/20）。
+# 2026-11-10 实测：纠错与 Sonnet 5.5 相当，能保住 Opus 5.5 这类新名字；Seed / DeepSeek 知识旧，会把新名字往回改。
+LIGHT_CLAUDE_MODEL = os.environ.get("CLAUDE_LIGHT_MODEL", "claude-haiku-5-5")
 # headless `claude -p` 没人点确认，未预先放行的工具一律被拒（结果里 permission_denials 可见），
 # 所以问答时查不了网。显式放行联网的两个只读工具。
 CLAUDE_ALLOWED_TOOLS = ["--allowedTools", "WebSearch", "WebFetch"]

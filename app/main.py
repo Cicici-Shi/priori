@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -75,11 +74,27 @@ def ingest_url(body: IngestUrl):
             body.url.strip(), key, lambda segs, turns, meta, prog: _save_podcast(key, body.url.strip(), segs, turns, meta, prog))
         return {"job_id": job["id"], "message": job["message"]}
 
+    if vid:
+        # 视频：抓字幕后跑专有名词纠错（YouTube 自动字幕常把 Claude Code 听成 cloud code），
+        # 要一两分钟 → 后台任务，前端轮询 /api/ingest/job/{id}。纠完再翻译，译文不用再猜。
+        url = body.url.strip()
+
+        def work(progress) -> str:
+            progress("抓取字幕…")
+            segments, title = ingest.from_youtube(url)
+            doc_id, _ = store.create_keyed(key, segments, source=url, title=title)
+            store.update(doc_id, kind="video")
+            try:  # 纠错失败不影响导入：原始字幕照样可读
+                _fix_terms(doc_id, progress=progress)
+            except (llm.LLMError, HTTPException) as e:
+                progress(f"专有名词纠错失败（已保留原始字幕）：{e}")
+            return doc_id
+
+        job = podcast.job_for_key(key) or podcast.start_task(key, work, "导入")
+        return {"job_id": job["id"], "message": job["message"]}
+
     try:
-        if vid:
-            segments, title = ingest.from_youtube(body.url)
-            chapters = None
-        elif ingest.is_x_url(body.url):
+        if ingest.is_x_url(body.url):
             # X 长文正文只在登录态里，走浏览器抓（见 ingest.from_x_article）
             segments, title = ingest.from_x_article(body.url)
             chapters = ingest.web_chapters(segments)
@@ -90,7 +105,7 @@ def ingest_url(body: IngestUrl):
         raise HTTPException(status_code=400, detail=str(e))
 
     doc_id, _ = store.create_keyed(key, segments, source=body.url, title=title)
-    store.update(doc_id, kind="video" if vid else "web", **({"chapters": chapters} if chapters else {}))
+    store.update(doc_id, kind="web", **({"chapters": chapters} if chapters else {}))
     doc = store.load(doc_id)
     return _doc_response(doc_id, doc)
 
@@ -111,9 +126,9 @@ def _save_podcast(key: str, url: str, segments: list, turns: list, meta: dict, p
 # 一批 300 句会撞 420s 超时。所以切小批、4 路并行，882 句约 5–6 分钟。
 _FIX_CHUNK = 80
 _FIX_PARALLEL = int(os.environ.get("FIXTERMS_PARALLEL", "4"))
-# 纠错用哪个模型：默认 agy（Gemini 3.8 Flash medium，比 Sonnet 快一倍、效果相当），没装 agy 退回 claude
-_FIX_BACKEND = os.environ.get("FIXTERMS_BACKEND") or ("agy" if shutil.which("agy") or os.path.exists(
-    os.path.expanduser("~/.local/bin/agy")) else "claude")
+# 纠错用哪个模型：默认 Claude Haiku 5.5（见 llm.LIGHT_CLAUDE_MODEL）。
+# 想用 agy（Gemini Flash，不占 Claude 额度，但额度用完要等几天）就设 FIXTERMS_BACKEND=agy。
+_FIX_BACKEND = os.environ.get("FIXTERMS_BACKEND") or "claude"
 
 
 def _fix_span(old: str, new: str) -> tuple[int, int, str] | None:
@@ -166,11 +181,13 @@ def _fix_terms(doc_id: str, backend_name: str | None = None, progress=lambda _m:
         if "orig" in sg:
             sg["text"] = sg.pop("orig")
             sg.pop("fix", None)
-    backend = llm.get_backend(backend_name or _FIX_BACKEND)
+    name = backend_name or _FIX_BACKEND
+    backend = llm.get_backend(name, llm.LIGHT_CLAUDE_MODEL if name == "claude" else None)
     title, notes = doc.get("title") or "", doc.get("shownotes") or ""
     batches = [(a, min(a + _FIX_CHUNK, len(segs)) - 1) for a in range(0, len(segs), _FIX_CHUNK)]
 
-    fallback = llm.get_backend("claude") if backend.name != "claude" else None
+    # agy 等失败时退回 Haiku（不是 Sonnet：纠错量大，退回 Sonnet 会很费额度）
+    fallback = llm.get_backend("claude", llm.LIGHT_CLAUDE_MODEL) if backend.name != "claude" else None
 
     def run(batch: tuple[int, int]) -> tuple[int, int, str]:
         a, b = batch  # gate=False：自己控并发，不占问答/笔记的单车道
@@ -180,7 +197,7 @@ def _fix_terms(doc_id: str, backend_name: str | None = None, progress=lambda _m:
         except llm.LLMError:
             if fallback is None:
                 raise
-            # agy 额度用完（429 RESOURCE_EXHAUSTED，要等几天才恢复）或其他失败：这一批改用 Claude
+            # agy 额度用完（429 RESOURCE_EXHAUSTED，要等几天才恢复）或其他失败：这一批改用 Claude Haiku
             return a, b, fallback.ask(prompt, None, gate=False)[0]
 
     answers, failed = [], 0
@@ -888,7 +905,8 @@ def translate(body: CleanBody):
 
     if todo:
         try:
-            backend = llm.get_backend(body.backend, body.model)
+            name = (body.backend or os.environ.get("LLM_BACKEND") or "claude").lower()
+            backend = llm.get_backend(name, body.model or (llm.LIGHT_CLAUDE_MODEL if name == "claude" else None))
             high = body.priority == "high"  # 用户正在看的那页 → 闸门里插到 summary/笔记前
             for p, zh in zip(todo, _batch_translate(backend, todo, high)):
                 cache[p] = new[p] = zh

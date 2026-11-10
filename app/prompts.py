@@ -81,8 +81,9 @@ CLEAN_INSTRUCTION = """下面是英文口语转写的若干段落，每段以 [[
 输出：对每一段，另起一段、以 `[[原编号]]` 开头，后跟清洗后的英文文本。只输出这些段落。"""
 
 
-FIXTERMS_INSTRUCTION = """下面是一期中文播客的语音转写（每行：序号<TAB>句子）。转写引擎的中文整体很准，但会把一些词听成**发音相近的别的字词**，例如：
+FIXTERMS_INSTRUCTION = """下面是一期节目（中文播客或英文视频字幕）的语音转写（每行：序号<TAB>句子）。转写整体很准，但会把一些词听成**发音相近的别的字词**，例如：
 - 专有名词：模型名 Opus → oppo / Opera，Gemini → german奶，eSIM → 异性 / ECM，节目名、主播名写成同音字；
+- 英文字幕同理：Claude → cloud / clawed，Claude Code → cloud code，Codex → codeex，RLHF → RHF；但 cloud 本身也是常用词（in the cloud、cloud provider、cloud agents），只有上下文明确在说 Anthropic 的模型或产品时才改；
 - 普通词的同音错字：「迎中秋」→「银中秋」，「智驾」→「支架」。
 
 请修正这两类「听错」的地方。依据：
@@ -104,10 +105,10 @@ FIXTERMS_INSTRUCTION = """下面是一期中文播客的语音转写（每行：
 
 
 # 常见专有名词：比模型训练数据新、单集 shownotes 里又常常不写的名字。写法以此为准。
-# 与 TRANSLATE_INSTRUCTION 里 Sol 的提示同源；遇到新的反复听错的名字就加在这里。
+# 纠错（中文播客与英文字幕都跑）时附在 prompt 里；遇到新的反复听错的名字就加在这里。
 KNOWN_TERMS = """- OpenAI 模型档位：Sol、Terra、Luna（常见误听：Sol → 瘦 / Soul / 所；Luna → 露娜），如「GPT 6 的 Sol 和 Luna」
-- OpenAI：GPT 6 Astra、Codex、ChatGPT
-- Anthropic：Claude、Opus、Sonnet、Haiku、Fable、Claude Code
+- OpenAI：GPT 6 Astra、Codex（常见误听：codeex / codex's）、ChatGPT
+- Anthropic：Claude、Opus、Sonnet、Haiku、Fable、Claude Code（常见误听：cloud code / cloud codes / cloud coding / clawed code，都还原成 Claude Code。单独的 cloud 不在此列，照常理解）
 - Apple：iPhone 18、iPhone Duo、Apple Intelligence
 - 其他模型 / 产品：Jev、Gemini、DeepSeek、Kimi、GLM、Qwen、Meta Muse、Grok"""
 
@@ -123,8 +124,8 @@ TRANSLATE_INSTRUCTION = """下面是英文转写的若干段落，每段以 [[�
 - 忠实原意、口语自然，别逐字硬翻。
 - 人名 / 产品名 / 机构名 / 模型名保留英文（如 GPT-5.6 / Sol / Terra / Luna / Fable 5 / Kimi K3 / Opus 4.8 / Transformer / Stanford / Moonshot）。
 - **LLM / AI 领域的英文术语一律保留英文原词，不要译成中文**：如 benchmark、token、prompt、context、fine-tune、embedding、agent、inference、checkpoint、open weight、RLHF、MoE、reasoning、SOTA 等；即使有常见中译（如 benchmark→基准测试）也保留英文。拿不准是不是通用术语时，倾向保留英文。
-- ⚠️ 源文是自动转写，常把模型名 **Sol**（OpenAI GPT-5.6 的旗舰档，同族还有 Terra / Luna）误拼成 **Soul / soul**。在谈模型或跑分的语境里（尤其紧跟版本号，如「5.6 Soul」「56 soul」），一律按模型名还原成 **Sol**（如 GPT-5.6 Sol），绝不要写成 Soul、更不要译成「灵魂」。
-- 不要解释、不要加注。
+- 口吃和重复起头（that that、I I、five five）只译一次，别照搬成「那个那个」「我，我」。
+- 不要解释、不要加注，也不要加原文没有的括号说明（如「（清了清嗓子）」）；[laughter] 这类标记照原样译成 [笑声]。
 
 **严格 1:1，不许合并**：输入有几段就输出几段，**每个 `[[编号]]` 必须原样出现且各自单独成段**，编号一一对应、不许跳号或改号。即使相邻两段是同一句话被切开的（如引号里的连续问句），也**分别翻译、分别用各自编号输出**，绝不并到一段里。短到只有一两个词也照样单独输出。
 
