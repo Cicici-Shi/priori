@@ -382,9 +382,36 @@ def _fmt_ts(sec) -> str:
     return f"{sec // 60:02d}:{sec % 60:02d}"
 
 
-def _parse_chapters(text: str, n: int) -> list[dict]:
-    """解析竖线分隔的章节行：`start | end | title | summary`，索引夹到 [0, n-1]。
+def _norm(s: str) -> str:
+    return re.sub(r"[\W_]+", "", s.lower())
 
+
+def _anchor_start(claimed: int, quote: str, segments: list[dict]) -> int:
+    """用模型抄的「起始句开头」在原文里找真正的起点。
+
+    低 effort 下让模型在一两百行里报序号，它常常是估的（2026-11-10 Chelsea Finn 那篇：
+    第一窗每章起点都早了二三十句，标题挂到了前一段内容上）；照抄原文比报数字可靠得多。
+    找不到足够像的句子就保留模型报的序号，不会比原来更差。"""
+    q = _norm(quote)
+    if len(q) < 8:
+        return claimed
+    import difflib
+    best, best_score = claimed, 0.0
+    for i in range(len(segments)):
+        # 起始句可能很短，接上下一句一起比
+        t = _norm(segments[i]["text"] + (segments[i + 1]["text"] if i + 1 < len(segments) else ""))[: len(q) + 5]
+        if not t:
+            continue
+        score = difflib.SequenceMatcher(None, q, t[: len(q)]).ratio()
+        if score > best_score + 1e-9 or (abs(score - best_score) < 1e-9 and abs(i - claimed) < abs(best - claimed)):
+            best, best_score = i, score
+    return best if best_score >= 0.8 else claimed
+
+
+def _parse_chapters(text: str, n: int, segments: list[dict] | None = None) -> list[dict]:
+    """解析竖线分隔的章节行：`start | end | 起始句开头 | title | summary`，索引夹到 [0, n-1]。
+
+    也兼容旧的 4 字段 `start | end | title | summary`。传了 segments 就用起始句开头校正起点。
     比 JSON 稳健——概括里的引号/标点不会破坏格式。
     """
     chapters = []
@@ -392,11 +419,17 @@ def _parse_chapters(text: str, n: int) -> list[dict]:
         line = line.strip().lstrip("-•").strip()
         if line.count("|") < 3:
             continue
-        a, b, title, summ = (p.strip() for p in line.split("|", 3))
+        if line.count("|") >= 4:
+            a, b, quote, title, summ = (p.strip() for p in line.split("|", 4))
+        else:
+            a, b, title, summ = (p.strip() for p in line.split("|", 3))
+            quote = ""
         # 起止字段必须是数字，否则视为非章节行（表头/说明等）跳过
         if not (a.lstrip("#").strip().isdigit() and b.strip().isdigit()):
             continue
         start = max(0, min(int(re.sub(r"\D", "", a)), n - 1))
+        if segments is not None and quote:
+            start = _anchor_start(start, quote, segments)
         end = max(start, min(int(re.sub(r"\D", "", b)), n - 1))
         chapters.append({
             "title": title or "（未命名）",
@@ -553,7 +586,7 @@ def _summary_windowed(body: "SummaryBody", segments: list[dict]) -> dict:
             answer, _ = backend.ask(prompt, None, effort=STRUCTURED_EFFORT)
         except llm.LLMError as e:
             raise HTTPException(status_code=502, detail=f"片段 {lo}–{hi}：{e}")
-        got = _parse_chapters(answer, len(part))
+        got = _parse_chapters(answer, len(part), part)
         for ch in got:
             ch["start"] += lo
             ch["end"] += lo
@@ -600,7 +633,7 @@ def summary(body: SummaryBody):
     if new_session and new_session != session_id:
         store.set_session(body.doc_id, new_session)
 
-    chapters = _parse_chapters(answer, len(segments))
+    chapters = _parse_chapters(answer, len(segments), segments)
     for ch in chapters:
         ch["start_ts"] = _fmt_ts(segments[ch["start"]].get("start"))
         ch["end_ts"] = _fmt_ts(segments[ch["end"]].get("end") or segments[ch["end"]].get("start"))
